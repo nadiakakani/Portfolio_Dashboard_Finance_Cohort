@@ -838,57 +838,6 @@ function computeRiskScoreAndFinal(portfolioState) {
   function renderStocksStatus() {
     if (!stocksDataListEl) return;
 
-    // Render MSFT Diagnostic Panel if MSFT exists in portfolioState.stocks
-    const msftStock = portfolioState.stocks.find(s => s.ticker === 'MSFT');
-    const diagContainer = document.getElementById('msft-diagnostic-container');
-    const diagContent = document.getElementById('msft-diagnostic-content');
-    if (msftStock && diagContainer && diagContent && msftStock.status === 'validated') {
-      diagContainer.style.display = 'block';
-      const bars = msftStock.prices || [];
-      const len = bars.length;
-      const firstBar = len > 0 ? bars[0] : { date: 'N/A', close: 0 };
-      const lastBar = len > 0 ? bars[len - 1] : { date: 'N/A', close: 0 };
-      const sma50Last3 = (msftStock.sma50Arr || []).slice(-3).map(v => v !== null && v !== undefined ? v.toFixed(2) : 'null');
-      const sma200Last3 = (msftStock.sma200Arr || []).slice(-3).map(v => v !== null && v !== undefined ? v.toFixed(2) : 'null');
-      const exactIndexRead = len > 0 ? len - 1 : 'N/A';
-
-      const closes = bars.map(b => b.close);
-      
-      // Independent fresh calculations for cross-check
-      let freshSma50 = null;
-      if (closes.length >= 50) {
-        const slice50 = closes.slice(-50);
-        freshSma50 = slice50.reduce((a, b) => a + b, 0) / 50;
-      }
-
-      let freshSma200 = null;
-      if (closes.length >= 200) {
-        const slice200 = closes.slice(-200);
-        freshSma200 = slice200.reduce((a, b) => a + b, 0) / 200;
-      }
-
-      let minBar = len > 0 ? bars[0] : null;
-      let maxBar = len > 0 ? bars[0] : null;
-      bars.forEach(b => {
-        if (b.close < minBar.close) minBar = b;
-        if (b.close > maxBar.close) maxBar = b;
-      });
-
-      diagContent.innerHTML = `
-        <div>1. bars.length: <strong>${len}</strong></div>
-        <div>2. bars[0] (Oldest): Date = <strong>${firstBar.date}</strong>, Close = <strong>$${firstBar.close}</strong></div>
-        <div>3. bars[bars.length-1] (Newest): Date = <strong>${lastBar.date}</strong>, Close = <strong>$${lastBar.close}</strong></div>
-        <div>4. Last 3 values of sma50 array: [<strong>${sma50Last3.join(', ')}</strong>]</div>
-        <div>4b. SMA50 Cross-Check: Function sma50[${len-1}] = <strong>$${msftStock.indicators.sma50?.toFixed(2) || 'null'}</strong> vs Fresh Loop Mean (last 50) = <strong>$${freshSma50 !== null ? freshSma50.toFixed(2) : 'N/A'}</strong></div>
-        <div>5. Last 3 values of sma200 array: [<strong>${sma200Last3.join(', ')}</strong>]</div>
-        <div>5b. SMA200 Cross-Check: Function sma200[${len-1}] = <strong>$${msftStock.indicators.sma200?.toFixed(2) || 'null'}</strong> vs Fresh Loop Mean (last 200) = <strong>$${freshSma200 !== null ? freshSma200.toFixed(2) : 'N/A'}</strong></div>
-        <div>6. Full Array Min Close: <strong>$${minBar ? minBar.close.toFixed(2) : 'N/A'}</strong> on <strong>${minBar ? minBar.date : 'N/A'}</strong> | Max Close: <strong>$${maxBar ? maxBar.close.toFixed(2) : 'N/A'}</strong> on <strong>${maxBar ? maxBar.date : 'N/A'}</strong></div>
-        <div>7. Exact array index read for indicators: <strong>closes.length - 1 = ${exactIndexRead}</strong></div>
-      `;
-    } else if (diagContainer) {
-      if (diagContainer) diagContainer.style.display = 'none';
-    }
-
     let html = `
       <div style="margin-bottom: 1rem; padding: 0.75rem; background: #e8f5e9; border-radius: 4px; font-size: 0.9rem;">
         <strong>Benchmark (SPY):</strong> ${portfolioState.benchmark.ticker} — Price: <strong>$${portfolioState.benchmark.price?.toFixed(2) || 'N/A'}</strong> | SMA200: <strong>$${portfolioState.benchmark.sma200?.toFixed(2) || 'N/A'}</strong> | 63d Return: <strong>${((portfolioState.benchmark.return63d || 0)*100).toFixed(1)}%</strong> (Bars: ${portfolioState.benchmark.barsAvailable})
@@ -929,6 +878,10 @@ function computeRiskScoreAndFinal(portfolioState) {
     });
     html += '</div>';
     stocksDataListEl.innerHTML = html;
+    
+    // Also re-render diagnostics tab content
+    renderDiagnosticsTable();
+    populateDiagnosticsDropdown();
   }
 
   if (runBtn) {
@@ -1101,4 +1054,207 @@ function computeRiskScoreAndFinal(portfolioState) {
 
   // Initial render calculation
   updateDashboardState();
+
+  // --- TABS LOGIC ---
+  const btnDash = document.getElementById('btn-tab-dashboard');
+  const btnDiag = document.getElementById('btn-tab-diagnostics');
+  const tabDash = document.getElementById('tab-dashboard');
+  const tabDiag = document.getElementById('tab-diagnostics');
+
+  if (btnDash && btnDiag) {
+    btnDash.addEventListener('click', () => {
+      btnDash.classList.add('active');
+      btnDiag.classList.remove('active');
+      tabDash.style.display = 'grid'; // because it uses grid in CSS
+      tabDiag.style.display = 'none';
+    });
+    btnDiag.addEventListener('click', () => {
+      btnDiag.classList.add('active');
+      btnDash.classList.remove('active');
+      tabDiag.style.display = 'block';
+      tabDash.style.display = 'none';
+      renderDiagnosticsTable();
+      populateDiagnosticsDropdown();
+    });
+  }
+
+  // --- DIAGNOSTICS TAB LOGIC ---
+  const diagTableBody = document.getElementById('diag-table-body');
+  const diagTickerSelect = document.getElementById('diag-ticker-select');
+  const deepDiagContainer = document.getElementById('deep-diagnostic-container');
+  const deepDiagContent = document.getElementById('deep-diagnostic-content');
+  const deepDiagTitle = document.getElementById('deep-diagnostic-title');
+
+  function fmt(val, decimals = 2) {
+    if (val === undefined || val === null || isNaN(val)) return '&mdash;';
+    return Number(val).toFixed(decimals);
+  }
+
+  function renderDiagnosticsTable() {
+    if (!diagTableBody) return;
+    let html = '';
+
+    // Render benchmark first
+    const bm = portfolioState.benchmark;
+    html += `
+      <tr>
+        <td style="text-align: left;"><strong>${bm.ticker || 'SPY'}</strong></td>
+        <td style="text-align: left;">Benchmark</td>
+        <td style="text-align: left;">${bm.price ? 'validated' : 'pending'}</td>
+        <td>${bm.barsAvailable || '&mdash;'}</td>
+        <td>${fmt(bm.price)}</td>
+        <td>&mdash;</td>
+        <td>${fmt(bm.sma200)}</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>${fmt(bm.return63d ? bm.return63d * 100 : null, 1)}%</td>
+        <td>${bm.aboveSma200 !== undefined ? !bm.aboveSma200 : '&mdash;'}</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td style="font-weight: bold;">&mdash;</td>
+      </tr>
+    `;
+
+    portfolioState.stocks.forEach(s => {
+      const ind = s.indicators || {};
+      const comp = s.components || {};
+      
+      html += `
+        <tr>
+          <td style="text-align: left;"><strong>${s.ticker}</strong></td>
+          <td style="text-align: left;">${s.bucket}</td>
+          <td style="text-align: left;">${s.status}</td>
+          <td>${s.barsAvailable || 0}</td>
+          <td>${fmt(s.price)}</td>
+          <td>${fmt(ind.sma50)}</td>
+          <td>${fmt(ind.sma200)}</td>
+          <td>${fmt(ind.rsi, 1)}</td>
+          <td>${fmt(ind.macdHistogram)}</td>
+          <td>${fmt(ind.annualisedVol ? ind.annualisedVol * 100 : null, 1)}%</td>
+          <td>${fmt(ind.maxDrawdown ? ind.maxDrawdown * 100 : null, 1)}%</td>
+          <td>${fmt(ind.medianDailyVolume, 0)}</td>
+          <td>${fmt(ind.medianDailyVolume && ind.medianDailyVolume60 ? ind.medianDailyVolume / ind.medianDailyVolume60 : null)}</td>
+          <td>${fmt(ind.return63d ? ind.return63d * 100 : null, 1)}%</td>
+          <td>${s.technical?.belowBothMAs !== undefined ? s.technical.belowBothMAs : '&mdash;'}</td>
+          <td>${fmt(comp.trend, 1)}</td>
+          <td>${fmt(comp.momentum, 1)}</td>
+          <td>${fmt(comp.risk, 1)}</td>
+          <td>${fmt(comp.volume, 1)}</td>
+          <td>${fmt(comp.sentiment, 1)}</td>
+          <td style="font-weight: bold; color: var(--accent);">${fmt(s.finalScore, 1)}</td>
+        </tr>
+      `;
+    });
+
+    diagTableBody.innerHTML = html;
+  }
+
+  function populateDiagnosticsDropdown() {
+    if (!diagTickerSelect) return;
+    
+    // Remember previous selection
+    const prevSelected = diagTickerSelect.value;
+    
+    let optionsHtml = '<option value="">-- Select Ticker --</option>';
+    
+    if (portfolioState.benchmark.price) {
+       optionsHtml += `<option value="${portfolioState.benchmark.ticker}">${portfolioState.benchmark.ticker} (Benchmark)</option>`;
+    }
+    
+    portfolioState.stocks.forEach(s => {
+      optionsHtml += `<option value="${s.ticker}">${s.ticker}</option>`;
+    });
+    
+    diagTickerSelect.innerHTML = optionsHtml;
+    
+    if (prevSelected && Array.from(diagTickerSelect.options).some(o => o.value === prevSelected)) {
+      diagTickerSelect.value = prevSelected;
+    }
+    
+    renderDeepDiagnosticPanel();
+  }
+
+  function renderDeepDiagnosticPanel() {
+    if (!diagTickerSelect || !deepDiagContainer || !deepDiagContent || !deepDiagTitle) return;
+    
+    const ticker = diagTickerSelect.value;
+    if (!ticker) {
+      deepDiagContainer.style.display = 'none';
+      return;
+    }
+
+    let targetStock = portfolioState.stocks.find(s => s.ticker === ticker);
+    let isBenchmark = false;
+    if (!targetStock && portfolioState.benchmark.ticker === ticker) {
+      targetStock = portfolioState.benchmark;
+      isBenchmark = true;
+    }
+    
+    if (!targetStock || targetStock.status === 'data-error' || targetStock.error) {
+      deepDiagContainer.style.display = 'block';
+      deepDiagTitle.textContent = `${ticker} Diagnostics`;
+      deepDiagContent.innerHTML = '<div>Data unavailable or invalid.</div>';
+      return;
+    }
+    
+    deepDiagContainer.style.display = 'block';
+    deepDiagTitle.textContent = `${ticker} Data & Indicator Diagnostics`;
+
+    const bars = isBenchmark ? (targetStock.bars || []) : (targetStock.prices || []);
+    const len = bars.length;
+    const firstBar = len > 0 ? bars[0] : { date: 'N/A', close: 0 };
+    const lastBar = len > 0 ? bars[len - 1] : { date: 'N/A', close: 0 };
+    
+    const closes = bars.map(b => b.close);
+    const exactIndexRead = len > 0 ? len - 1 : 'N/A';
+    
+    let minBar = len > 0 ? bars[0] : null;
+    let maxBar = len > 0 ? bars[0] : null;
+    bars.forEach(b => {
+      if (b.close < minBar.close) minBar = b;
+      if (b.close > maxBar.close) maxBar = b;
+    });
+
+    let html = `
+      <div>1. bars.length: <strong>${len}</strong></div>
+      <div>2. bars[0] (Oldest): Date = <strong>${firstBar.date}</strong>, Close = <strong>$${firstBar.close}</strong></div>
+      <div>3. bars[bars.length-1] (Newest): Date = <strong>${lastBar.date}</strong>, Close = <strong>$${lastBar.close}</strong></div>
+      <div>6. Full Array Min Close: <strong>$${minBar ? minBar.close.toFixed(2) : 'N/A'}</strong> on <strong>${minBar ? minBar.date : 'N/A'}</strong> | Max Close: <strong>$${maxBar ? maxBar.close.toFixed(2) : 'N/A'}</strong> on <strong>${maxBar ? maxBar.date : 'N/A'}</strong></div>
+      <div>7. Exact array index read for indicators: <strong>closes.length - 1 = ${exactIndexRead}</strong></div>
+    `;
+
+    if (!isBenchmark) {
+      const sma50Last3 = (targetStock.sma50Arr || []).slice(-3).map(v => v !== null && v !== undefined ? v.toFixed(2) : 'null');
+      const sma200Last3 = (targetStock.sma200Arr || []).slice(-3).map(v => v !== null && v !== undefined ? v.toFixed(2) : 'null');
+
+      let freshSma50 = null;
+      if (closes.length >= 50) {
+        freshSma50 = closes.slice(-50).reduce((a, b) => a + b, 0) / 50;
+      }
+      let freshSma200 = null;
+      if (closes.length >= 200) {
+        freshSma200 = closes.slice(-200).reduce((a, b) => a + b, 0) / 200;
+      }
+
+      html += `
+        <div>4. Last 3 values of sma50 array: [<strong>${sma50Last3.join(', ')}</strong>]</div>
+        <div>4b. SMA50 Cross-Check: Function sma50[${len-1}] = <strong>$${targetStock.indicators?.sma50?.toFixed(2) || 'null'}</strong> vs Fresh Loop Mean (last 50) = <strong>$${freshSma50 !== null ? freshSma50.toFixed(2) : 'N/A'}</strong></div>
+        <div>5. Last 3 values of sma200 array: [<strong>${sma200Last3.join(', ')}</strong>]</div>
+        <div>5b. SMA200 Cross-Check: Function sma200[${len-1}] = <strong>$${targetStock.indicators?.sma200?.toFixed(2) || 'null'}</strong> vs Fresh Loop Mean (last 200) = <strong>$${freshSma200 !== null ? freshSma200.toFixed(2) : 'N/A'}</strong></div>
+      `;
+    }
+
+    deepDiagContent.innerHTML = html;
+  }
+
+  if (diagTickerSelect) {
+    diagTickerSelect.addEventListener('change', renderDeepDiagnosticPanel);
+  }
 });

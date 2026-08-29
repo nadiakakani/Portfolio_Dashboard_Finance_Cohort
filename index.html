@@ -14,7 +14,15 @@
   </header>
 
   <main class="app-main">
-    <!-- MANDATE PANEL -->
+    <!-- TABS NAVIGATION -->
+    <nav class="tabs" style="display: flex; gap: 1rem; border-bottom: 2px solid var(--line); margin-bottom: 1.5rem; padding-bottom: 0;">
+      <button id="btn-tab-dashboard" class="tab-btn active">Dashboard</button>
+      <button id="btn-tab-diagnostics" class="tab-btn">Diagnostics</button>
+    </nav>
+
+    <!-- TAB CONTENT: DASHBOARD -->
+    <div id="tab-dashboard" class="tab-content active" style="display: block;">
+      <!-- MANDATE PANEL -->
     <section class="panel" id="mandate-panel">
       <h2>1. Investment Mandate & Parameters</h2>
       <form id="mandate-form">
@@ -173,14 +181,62 @@
       <h2>3. Universe Price Data & Status</h2>
       <p class="placeholder">Click "Run Portfolio Analysis" above to fetch benchmark (SPY) and 20 universe equities with throttled queue and caching.</p>
       
-      <!-- DIAGNOSTIC PANEL FOR MSFT -->
-      <div id="msft-diagnostic-container" style="margin-top: 1.5rem; display: none; background: #fff; border: 2px solid var(--accent); padding: 1rem; border-radius: 6px;">
-        <h3 style="margin-top: 0; font-size: 1.1rem; color: var(--accent);">MSFT Data & Indicator Diagnostics</h3>
-        <div id="msft-diagnostic-content" style="font-family: monospace; font-size: 0.85rem; display: grid; gap: 0.4rem; color: #333;"></div>
-      </div>
-
       <div id="stocks-data-list" style="margin-top: 1rem;"></div>
     </section>
+    </div> <!-- END TAB DASHBOARD -->
+
+    <!-- TAB CONTENT: DIAGNOSTICS -->
+    <div id="tab-diagnostics" class="tab-content" style="display: none;">
+      <section class="panel">
+        <h2>Diagnostic Table</h2>
+        <div style="overflow-x: auto; margin-top: 1rem;">
+          <table id="diag-table" class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right; min-width: 1200px;">
+            <thead>
+              <tr style="background: var(--surface); border-bottom: 2px solid var(--ink);">
+                <th style="text-align: left; padding: 6px;">Ticker</th>
+                <th style="text-align: left; padding: 6px;">Bucket</th>
+                <th style="text-align: left; padding: 6px;">Status</th>
+                <th style="padding: 6px;">Bars</th>
+                <th style="padding: 6px;">Price</th>
+                <th style="padding: 6px;">SMA50</th>
+                <th style="padding: 6px;">SMA200</th>
+                <th style="padding: 6px;">RSI</th>
+                <th style="padding: 6px;">MACD Hist</th>
+                <th style="padding: 6px;">Ann Vol</th>
+                <th style="padding: 6px;">Max DD</th>
+                <th style="padding: 6px;">Med Vol</th>
+                <th style="padding: 6px;">Vol Ratio</th>
+                <th style="padding: 6px;">Ret(63d)</th>
+                <th style="padding: 6px;">Below MAs</th>
+                <th style="padding: 6px;">Trend</th>
+                <th style="padding: 6px;">Momentum</th>
+                <th style="padding: 6px;">Risk</th>
+                <th style="padding: 6px;">Volume</th>
+                <th style="padding: 6px;">Sentiment</th>
+                <th style="padding: 6px; font-weight: bold;">Final</th>
+              </tr>
+            </thead>
+            <tbody id="diag-table-body">
+              <!-- JS populated -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" style="margin-top: 1.5rem;">
+        <h2>Deep Diagnostic Panel</h2>
+        <div style="margin-bottom: 1rem;">
+          <label for="diag-ticker-select" style="font-weight: bold; margin-right: 0.5rem;">Select Ticker:</label>
+          <select id="diag-ticker-select" style="padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid var(--line);">
+            <!-- Options added dynamically -->
+          </select>
+        </div>
+        <div id="deep-diagnostic-container" style="display: none; background: #fff; border: 2px solid var(--accent); padding: 1rem; border-radius: 6px;">
+          <h3 id="deep-diagnostic-title" style="margin-top: 0; font-size: 1.1rem; color: var(--accent);">Ticker Diagnostics</h3>
+          <div id="deep-diagnostic-content" style="font-family: monospace; font-size: 0.85rem; display: grid; gap: 0.4rem; color: #333;"></div>
+        </div>
+      </section>
+    </div> <!-- END TAB DIAGNOSTICS -->
   </main>
 
   <footer class="app-footer" id="app-footer">
