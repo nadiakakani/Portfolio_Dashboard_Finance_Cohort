@@ -911,13 +911,9 @@ function computeRiskScoreAndFinal(portfolioState) {
               <div>SMA50: $${s.indicators.sma50?.toFixed(2) || 'N/A'} | SMA200: $${s.indicators.sma200?.toFixed(2) || 'N/A'}</div>
               <div>Ann. Vol: <strong>${((s.indicators.annualisedVol || 0)*100).toFixed(1)}%</strong> | Max DD: <strong>${((s.indicators.maxDrawdown || 0)*100).toFixed(1)}%</strong></div>
               <div>63d Return: <strong>${((s.indicators.return63d || 0)*100).toFixed(1)}%</strong> | Bars: ${s.barsAvailable}</div>
-              <div style="border-top: 1px solid #ccc; margin-top: 0.25rem; padding-top: 0.25rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.2rem; font-size: 0.75rem;">
-                <div>Trend: <strong>${s.components?.trend?.toFixed(1) || 0}</strong></div>
-                <div>Momentum: <strong>${s.components?.momentum?.toFixed(1) || 0}</strong></div>
-                <div>Risk: <strong>${s.components?.risk?.toFixed(1) || 0}</strong></div>
-                <div>Volume: <strong>${s.components?.volume?.toFixed(1) || 0}</strong></div>
-                <div>Sentiment: <strong>${s.components?.sentiment?.toFixed(1) || 0}</strong></div>
-                <div style="color: var(--accent); font-weight: bold;">Final: ${s.finalScore?.toFixed(1) || 0}</div>
+              <div style="border-top: 1px solid #ccc; margin-top: 0.25rem; padding-top: 0.25rem; font-size: 0.75rem;">
+                <div>Trend: ${s.components?.trend?.toFixed(1) || 0} | Momentum: ${s.components?.momentum?.toFixed(1) || 0} | Risk: ${s.components?.risk?.toFixed(1) || 0} | Volume: ${s.components?.volume?.toFixed(1) || 0} | Sentiment: ${s.components?.sentiment?.toFixed(1) || 0}</div>
+                <div style="color: var(--accent); font-weight: bold; margin-top: 0.2rem;">FINAL SCORE: ${s.finalScore?.toFixed(1) || 0}</div>
               </div>
               <div style="font-size: 0.7rem; color: #555; margin-top: 0.2rem;">
                 + <strong>${s.topContributors?.join(', ') || 'N/A'}</strong> | - <strong>${s.topDetractors?.join(', ') || 'N/A'}</strong>
