@@ -70,6 +70,20 @@ const CONFIG = {
   disclaimer: "Educational MBA prototype. Not personalised investment advice. Proposes only — never trades."
 };
 
+function assertScoreWeights() {
+  const buckets = Object.keys(CONFIG.scoreWeights);
+  for (const bucket of buckets) {
+    const weights = CONFIG.scoreWeights[bucket];
+    const sum = weights.trend + weights.momentum + weights.risk + weights.volume + weights.sentiment;
+    if (Math.abs(sum - 1.0) > 1e-5) {
+      console.error(`CRITICAL: scoreWeights for bucket '${bucket}' sum to ${sum.toFixed(4)}, not 1.00!`);
+    }
+  }
+}
+
+// Call on startup
+assertScoreWeights();
+
 // Consolidated state object (Part A section A7)
 let portfolioState = {
   inputs: {
@@ -708,6 +722,117 @@ function calculateMedianDailyVolume(volumes, lookback = 20) {
   return sorted[mid];
 }
 
+// --- Score Computation Functions ---
+
+function computeTrendScore(stock, benchmark) {
+  if (stock.status === 'data-error') return 0;
+  const ind = stock.indicators;
+  if (!ind || ind.sma200 === undefined) return 0;
+
+  const priceVsSma200 = Math.max(0, Math.min(100, 50 + ((stock.price / (ind.sma200 || 1)) - 1) * 250));
+  const sma50VsSma200 = Math.max(0, Math.min(100, 50 + ((ind.sma50 / (ind.sma200 || 1)) - 1) * 250));
+  const rs = Math.max(0, Math.min(100, 50 + (ind.return63d - (benchmark.return63d || 0)) * 250));
+
+  return (0.40 * priceVsSma200) + (0.35 * sma50VsSma200) + (0.25 * rs);
+}
+
+function computeMomentumScore(stock) {
+  if (stock.status === 'data-error') return 0;
+  const ind = stock.indicators;
+  if (!ind || ind.rsi === undefined) return 0;
+
+  // Discrete bands for RSI
+  let rsiScore = 50;
+  if (ind.rsi > 70) rsiScore = 100;
+  else if (ind.rsi > 60) rsiScore = 75;
+  else if (ind.rsi >= 40) rsiScore = 50;
+  else if (ind.rsi >= 30) rsiScore = 25;
+  else rsiScore = 0;
+
+  // Self-scaling MACD
+  const macdScore = Math.max(0, Math.min(100, 50 + (ind.macdHistogram / (stock.price || 1)) * 2500));
+
+  return (0.50 * rsiScore) + (0.50 * macdScore);
+}
+
+function computeVolumeScore(stock) {
+  if (stock.status === 'data-error') return 0;
+  const ind = stock.indicators;
+  if (!ind || ind.medianDailyVolume === undefined) return 0;
+
+  const ratio = (ind.medianDailyVolume || 0) / (ind.medianDailyVolume60 || 1);
+  const ratioScore = Math.max(0, Math.min(100, 50 + (ratio - 1) * 100));
+
+  // OBV trend
+  const obvScore = Math.max(0, Math.min(100, 50 + (ind.obvChange20 / (ind.medianDailyVolume * 20 || 1)) * 250));
+
+  return (0.50 * ratioScore) + (0.50 * obvScore);
+}
+
+function computeRiskScoreAndFinal(portfolioState) {
+  // First pass: Calculate Risk by ranking within buckets
+  const buckets = Object.keys(CONFIG.universe);
+  
+  buckets.forEach(bucket => {
+    const peers = portfolioState.stocks.filter(s => s.bucket === bucket && s.status !== 'data-error');
+    if (peers.length === 0) return;
+
+    // Rank by annualized Volatility (lowest = best)
+    const sortedByVol = [...peers].sort((a, b) => (a.indicators.annualisedVol || 0) - (b.indicators.annualisedVol || 0));
+    sortedByVol.forEach((stock, index) => {
+      stock.tempVolPercentile = peers.length > 1 ? (peers.length - 1 - index) / (peers.length - 1) * 100 : 50;
+    });
+
+    // Rank by Max Drawdown (lowest = best)
+    const sortedByDd = [...peers].sort((a, b) => (a.indicators.maxDrawdown || 0) - (b.indicators.maxDrawdown || 0));
+    sortedByDd.forEach((stock, index) => {
+      stock.tempDdPercentile = peers.length > 1 ? (peers.length - 1 - index) / (peers.length - 1) * 100 : 50;
+    });
+
+    // Compute Risk Score
+    peers.forEach(stock => {
+      const riskScore = (0.60 * stock.tempVolPercentile) + (0.40 * stock.tempDdPercentile);
+      
+      stock.components = stock.components || {};
+      stock.components.risk = Math.max(0, Math.min(100, riskScore));
+    });
+  });
+
+  // Second pass: Final Score and Contributors/Detractors
+  portfolioState.stocks.forEach(stock => {
+    if (stock.status === 'data-error') return;
+
+    const weights = CONFIG.scoreWeights[stock.bucket];
+    stock.components.sentiment = 50; // Neutral for now
+
+    const finalScore = 
+      (stock.components.trend * weights.trend) +
+      (stock.components.momentum * weights.momentum) +
+      (stock.components.risk * weights.risk) +
+      (stock.components.volume * weights.volume) +
+      (stock.components.sentiment * weights.sentiment);
+
+    stock.finalScore = Math.max(0, Math.min(100, finalScore));
+
+    // Calculate contributors and detractors
+    const devs = [
+      { name: 'Trend', dev: (stock.components.trend - 50) * weights.trend },
+      { name: 'Momentum', dev: (stock.components.momentum - 50) * weights.momentum },
+      { name: 'Risk', dev: (stock.components.risk - 50) * weights.risk },
+      { name: 'Volume', dev: (stock.components.volume - 50) * weights.volume },
+      { name: 'Sentiment', dev: (stock.components.sentiment - 50) * weights.sentiment }
+    ];
+
+    devs.sort((a, b) => b.dev - a.dev); // highest positive first
+
+    stock.topContributors = devs.filter(d => d.dev > 0).slice(0, 2).map(d => d.name);
+    
+    const negs = devs.filter(d => d.dev < 0).sort((a, b) => a.dev - b.dev); // most negative first
+    stock.topDetractors = negs.slice(0, 2).map(d => d.name);
+  });
+}
+
+
   function renderStocksStatus() {
     if (!stocksDataListEl) return;
 
@@ -786,7 +911,18 @@ function calculateMedianDailyVolume(volumes, lookback = 20) {
               <div>SMA50: $${s.indicators.sma50?.toFixed(2) || 'N/A'} | SMA200: $${s.indicators.sma200?.toFixed(2) || 'N/A'}</div>
               <div>Ann. Vol: <strong>${((s.indicators.annualisedVol || 0)*100).toFixed(1)}%</strong> | Max DD: <strong>${((s.indicators.maxDrawdown || 0)*100).toFixed(1)}%</strong></div>
               <div>63d Return: <strong>${((s.indicators.return63d || 0)*100).toFixed(1)}%</strong> | Bars: ${s.barsAvailable}</div>
-              ${s.existingShares > 0 ? `<div>Existing Holding: ${s.existingShares.toLocaleString()} shares</div>` : ''}
+              <div style="border-top: 1px solid #ccc; margin-top: 0.25rem; padding-top: 0.25rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.2rem; font-size: 0.75rem;">
+                <div>Trend: <strong>${s.components?.trend?.toFixed(1) || 0}</strong></div>
+                <div>Momentum: <strong>${s.components?.momentum?.toFixed(1) || 0}</strong></div>
+                <div>Risk: <strong>${s.components?.risk?.toFixed(1) || 0}</strong></div>
+                <div>Volume: <strong>${s.components?.volume?.toFixed(1) || 0}</strong></div>
+                <div>Sentiment: <strong>${s.components?.sentiment?.toFixed(1) || 0}</strong></div>
+                <div style="color: var(--accent); font-weight: bold;">Final: ${s.finalScore?.toFixed(1) || 0}</div>
+              </div>
+              <div style="font-size: 0.7rem; color: #555; margin-top: 0.2rem;">
+                + <strong>${s.topContributors?.join(', ') || 'N/A'}</strong> | - <strong>${s.topDetractors?.join(', ') || 'N/A'}</strong>
+              </div>
+              ${s.existingShares > 0 ? `<div style="margin-top: 0.25rem; color: #1565c0;">Existing Holding: ${s.existingShares.toLocaleString()} shares</div>` : ''}
             </div>
           `}
         </div>
@@ -875,6 +1011,7 @@ function calculateMedianDailyVolume(volumes, lookback = 20) {
             const obvObj = calculateOBV(closes, volumes, CONFIG.indicators.obvLookback);
             const return63d = calculatePeriodReturn(closes, CONFIG.indicators.relativeStrengthDays);
             const medianVol = calculateMedianDailyVolume(volumes, CONFIG.volumeLookbackDays);
+            const medianVol60 = calculateMedianDailyVolume(volumes, 60);
 
             const lastIdx = closes.length - 1;
             const indicators = {
@@ -890,10 +1027,11 @@ function calculateMedianDailyVolume(volumes, lookback = 20) {
               obv: obvObj.obv[lastIdx],
               obvChange20: obvObj.obvChange20,
               return63d: return63d,
-              medianDailyVolume: medianVol
+              medianDailyVolume: medianVol,
+              medianDailyVolume60: medianVol60
             };
 
-            portfolioState.stocks.push({
+            const stockObj = {
               ticker: task.ticker,
               name: task.ticker,
               bucket: task.bucket,
@@ -906,7 +1044,16 @@ function calculateMedianDailyVolume(volumes, lookback = 20) {
               sma200Arr,
               indicators,
               status: 'validated'
-            });
+            };
+
+            stockObj.components = {
+              trend: computeTrendScore(stockObj, portfolioState.benchmark),
+              momentum: computeMomentumScore(stockObj),
+              volume: computeVolumeScore(stockObj),
+              sentiment: 50 // Default
+            };
+
+            portfolioState.stocks.push(stockObj);
           } catch (err) {
             console.error(`Failed to fetch ${task.ticker}:`, err);
             portfolioState.stocks.push({
@@ -919,6 +1066,7 @@ function calculateMedianDailyVolume(volumes, lookback = 20) {
               existingShares,
               prices: [],
               indicators: {},
+              components: { trend: 0, momentum: 0, risk: 0, volume: 0, sentiment: 50 },
               status: 'data-error',
               errorReason: err.message
             });
@@ -930,8 +1078,11 @@ function calculateMedianDailyVolume(volumes, lookback = 20) {
           }
         }
 
+        // Second pass: Calculate risk percentiles across buckets and compute final score
+        computeRiskScoreAndFinal(portfolioState);
+
         if (progressEl) {
-          progressEl.textContent = 'Analysis price fetch complete! (21 / 21)';
+          progressEl.textContent = 'Analysis price fetch and scoring complete! (21 / 21)';
         }
         renderStocksStatus();
 
