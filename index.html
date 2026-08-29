@@ -236,6 +236,27 @@
           <div id="deep-diagnostic-content" style="font-family: monospace; font-size: 0.85rem; display: grid; gap: 0.4rem; color: #333;"></div>
         </div>
       </section>
+
+      <section class="panel" style="margin-top: 1.5rem;">
+        <h2>Liquidity Debug Table (Temp)</h2>
+        <div style="overflow-x: auto; margin-top: 1rem;">
+          <table id="liquidity-debug-table" class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right; min-width: 800px;">
+            <thead>
+              <tr style="background: var(--surface); border-bottom: 2px solid var(--ink);">
+                <th style="text-align: left; padding: 6px;">Ticker</th>
+                <th style="padding: 6px;">Median Volume</th>
+                <th style="padding: 6px;">ADTV (USD)</th>
+                <th style="text-align: center; padding: 6px;">Tier</th>
+                <th style="padding: 6px;">Ceiling</th>
+                <th style="padding: 6px;">Liquidity Cap (USD)</th>
+              </tr>
+            </thead>
+            <tbody id="liquidity-debug-table-body">
+              <!-- JS populated -->
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div> <!-- END TAB DIAGNOSTICS -->
   </main>
 

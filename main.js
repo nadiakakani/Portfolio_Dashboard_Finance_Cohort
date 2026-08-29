@@ -123,6 +123,7 @@ let portfolioState = {
     defensive: { strategicWeight: 0, regimeAdjustment: 0, finalWeight: 0, amount: 0, qualifiers: [], deployed: 0, undeployed: 0, purpose: CONFIG.universe.defensive.purpose }
   },
   stocks: [],
+  hardBlocks: [],
   correlationMatrix: [],
   comparison: {
     inverseVolatility: { vol: 0, concentration: 0 },
@@ -937,6 +938,7 @@ function computeRiskScoreAndFinal(portfolioState) {
         } // total 20 tickers
 
         portfolioState.stocks = [];
+        portfolioState.hardBlocks = [];
         let completedCount = 1; // SPY is 1
 
         for (const task of universeTasks) {
@@ -1001,12 +1003,16 @@ function computeRiskScoreAndFinal(portfolioState) {
               status: 'validated'
             };
 
+            // Compute components
             stockObj.components = {
               trend: computeTrendScore(stockObj, portfolioState.benchmark),
               momentum: computeMomentumScore(stockObj),
               volume: computeVolumeScore(stockObj),
               sentiment: 50 // Default
             };
+
+            // Compute liquidity
+            computeLiquidity(stockObj);
 
             portfolioState.stocks.push(stockObj);
           } catch (err) {
@@ -1054,6 +1060,46 @@ function computeRiskScoreAndFinal(portfolioState) {
 
   // Initial render calculation
   updateDashboardState();
+
+  // --- COMPUTE LIQUIDITY ---
+  function computeLiquidity(stock) {
+    if (stock.status === 'data-error') return;
+    const ind = stock.indicators;
+    if (!ind || ind.medianDailyVolume === undefined) return;
+    
+    const adtvUsd = ind.medianDailyVolume * stock.price;
+    
+    let tier = CONFIG.liquidityTiers[CONFIG.liquidityTiers.length - 1]; // Default to Illiquid
+    for (const t of CONFIG.liquidityTiers) {
+      if (adtvUsd >= t.minAdtv) {
+        tier = t;
+        break;
+      }
+    }
+
+    const participationCeiling = tier.participationCeiling;
+    const maxDailyShares = ind.medianDailyVolume * participationCeiling;
+    const maxDailyNotional = maxDailyShares * stock.price;
+    const liquidityCapUsd = maxDailyNotional * portfolioState.inputs.maxExecutionDays;
+
+    stock.liquidity = {
+      adtvUsd,
+      tier: tier.name,
+      participationCeiling,
+      maxDailyShares,
+      maxDailyNotional,
+      liquidityCapUsd
+    };
+
+    if (tier.name === 'Illiquid') {
+      stock.status = 'excluded-liquidity';
+      portfolioState.hardBlocks.push({
+        ticker: stock.ticker,
+        reason: 'Illiquid tier',
+        adtv: adtvUsd
+      });
+    }
+  }
 
   // --- TABS LOGIC ---
   const btnDash = document.getElementById('btn-tab-dashboard');
@@ -1156,6 +1202,28 @@ function computeRiskScoreAndFinal(portfolioState) {
     diagTableBody.innerHTML = html;
   }
 
+  function renderLiquidityDebugTable() {
+    const tbody = document.getElementById('liquidity-debug-table-body');
+    if (!tbody) return;
+    
+    let html = '';
+    portfolioState.stocks.forEach(s => {
+      const liq = s.liquidity || {};
+      const vol = s.indicators?.medianDailyVolume;
+      html += `
+        <tr>
+          <td style="text-align: left;"><strong>${s.ticker}</strong></td>
+          <td>${fmt(vol, 0)}</td>
+          <td>$${fmt(liq.adtvUsd, 2)}</td>
+          <td style="text-align: center;">${liq.tier || '&mdash;'}</td>
+          <td>${fmt(liq.participationCeiling ? liq.participationCeiling * 100 : null, 0)}%</td>
+          <td>$${fmt(liq.liquidityCapUsd, 2)}</td>
+        </tr>
+      `;
+    });
+    tbody.innerHTML = html;
+  }
+
   function populateDiagnosticsDropdown() {
     if (!diagTickerSelect) return;
     
@@ -1179,6 +1247,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     }
     
     renderDeepDiagnosticPanel();
+    renderLiquidityDebugTable();
   }
 
   function renderDeepDiagnosticPanel() {
