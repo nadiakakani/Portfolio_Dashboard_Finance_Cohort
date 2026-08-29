@@ -3,39 +3,188 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>GenAI Finance App</title>
+  <title>GenAI Finance Dashboard</title>
+  <meta name="description" content="GenAI-powered portfolio construction and rebalancing dashboard for MBA assignment" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <header class="app-header">
-    <h1>GenAI Finance App</h1>
-    <p class="subtitle">Template starting point</p>
+    <h1>GenAI Finance Dashboard</h1>
+    <p class="subtitle">Portfolio Construction & Rebalancing (Educational MBA Prototype)</p>
   </header>
 
   <main class="app-main">
-    <section class="panel">
-      <form id="ticker-form">
-        <label for="ticker">Ticker</label>
-        <input id="ticker" name="ticker" type="text" placeholder="e.g. AAPL, MSFT, NVDA" required />
+    <!-- MANDATE PANEL -->
+    <section class="panel" id="mandate-panel">
+      <h2>1. Investment Mandate & Parameters</h2>
+      <form id="mandate-form">
+        <div class="field-group">
+          <label for="total-investment">Total Investment Amount</label>
+          <input id="total-investment" name="totalInvestment" type="number" value="500000" min="1000" step="1000" required />
+        </div>
 
-        <label for="twelvedata-key">Twelve Data API key</label>
-        <input id="twelvedata-key" name="twelvedata-key" type="password" placeholder="Twelve Data key" required />
-        <p class="field-hint">The free Twelve Data plan covers all US stocks and ETFs, limited to 8 requests/minute and 800/day. Get a free key at <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener">twelvedata.com</a>.</p>
+        <div class="field-group">
+          <label for="base-currency">Base Currency</label>
+          <select id="base-currency" name="baseCurrency">
+            <option value="USD" selected>USD ($)</option>
+            <option value="GBP">GBP (£)</option>
+            <option value="EUR">EUR (€)</option>
+          </select>
+        </div>
 
-        <label for="openrouter-key">OpenRouter API key</label>
-        <input id="openrouter-key" name="openrouter-key" type="password" placeholder="sk-or-..." required />
+        <div class="field-group">
+          <label for="cash-reserve">Minimum Cash Reserve (%)</label>
+          <input id="cash-reserve" name="cashReservePct" type="number" value="5" min="0" max="50" step="0.5" required />
+        </div>
 
-        <button type="submit">Analyze</button>
+        <div class="field-group">
+          <label for="commission-pct">Brokerage Commission (%)</label>
+          <input id="commission-pct" name="commissionPct" type="number" value="0.1" min="0" max="5" step="0.01" required />
+        </div>
+
+        <div class="field-group">
+          <label for="tax-pct">Transaction Tax (%)</label>
+          <input id="tax-pct" name="taxPct" type="number" value="0.5" min="0" max="5" step="0.01" required />
+        </div>
+
+        <div class="field-group checkbox-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
+          <input id="fractional-shares" name="fractionalShares" type="checkbox" style="width: auto;" />
+          <label for="fractional-shares" style="margin: 0; text-transform: none; font-size: 0.95rem;">Fractional shares allowed</label>
+        </div>
+
+        <div class="field-group">
+          <label for="max-execution-days">Max Execution Period (Trading Days)</label>
+          <input id="max-execution-days" name="maxExecutionDays" type="number" value="5" min="1" max="30" step="1" required />
+        </div>
+
+        <div class="field-group slider-group">
+          <label for="risk-factor">Risk Factor R (0 = Conservative, 0.5 = Balanced, 1 = Aggressive): <span id="risk-value">0.5</span> (<span id="risk-label">Balanced</span>)</label>
+          <input id="risk-factor" name="riskFactor" type="range" min="0" max="1" step="0.05" value="0.5" style="width: 100%; cursor: pointer;" />
+          <div style="margin-top: 0.5rem;">
+            <button type="button" id="balanced-preset-btn" style="background: #e8e3d5; color: var(--ink); border: 1px solid var(--line); font-size: 0.85rem; padding: 0.4rem 0.8rem; width: 100%;">Balanced preset (35/25/20/20) — preset, not formula-derived</button>
+            <p id="preset-status" class="field-hint" style="margin-top: 0.25rem; display: none; color: var(--accent);">Currently using Balanced preset. Dragging the risk slider will return to formula-derived weights.</p>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label>Weighting Method</label>
+          <div class="radio-group" style="display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.25rem;">
+            <label style="text-transform: none; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;"><input type="radio" name="weightingMethod" value="inverseVolatility" checked /> Inverse Volatility (Default / Taught)</label>
+            <label style="text-transform: none; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;"><input type="radio" name="weightingMethod" value="scoreProportional" /> Score Proportional</label>
+            <label style="text-transform: none; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;"><input type="radio" name="weightingMethod" value="equalWeight" /> Equal Weight</label>
+          </div>
+        </div>
       </form>
     </section>
 
+    <!-- EXISTING HOLDINGS SUB-PANEL -->
+    <section class="panel" id="holdings-panel">
+      <h2>Existing Holdings</h2>
+      <p class="field-hint">Add any current holdings (ticker & share count). Empty is valid and means a fresh portfolio.</p>
+      <div class="holding-input-row" style="display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem;">
+        <input id="new-holding-ticker" type="text" placeholder="Ticker (e.g. MSFT)" style="max-width: 140px;" />
+        <input id="new-holding-shares" type="number" placeholder="Share count" min="0" step="any" style="max-width: 140px;" />
+        <button type="button" id="add-holding-btn" style="margin: 0;">Add Holding</button>
+      </div>
+      <div id="holdings-list" class="holdings-list" style="margin-top: 0.75rem;">
+        <p class="placeholder">No existing holdings added.</p>
+      </div>
+    </section>
+
+    <!-- CAPITAL & BUCKETS PANEL -->
+    <section class="panel" id="capital-buckets-panel">
+      <h2>2. Capital & Strategic Bucket Allocation</h2>
+      <div id="weight-error-banner" style="display: none; background: #ffebee; color: var(--error); padding: 0.5rem; border-radius: 3px; margin-bottom: 0.75rem; font-weight: bold; font-size: 0.85rem;"></div>
+      
+      <div class="capital-waterfall" style="font-size: 0.9rem; display: grid; gap: 0.35rem; margin-bottom: 1rem; border-bottom: 1px solid var(--line); padding-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between;"><span>Total Gross Investment:</span> <strong id="wf-gross">$500,000.00</strong></div>
+        <div style="display: flex; justify-content: space-between; color: #555;"><span>(-) Existing Holdings Market Value:</span> <span id="wf-existing">$0.00</span></div>
+        <div style="display: flex; justify-content: space-between; color: #555;"><span>(-) Minimum Cash Reserve:</span> <span id="wf-reserve">$25,000.00</span></div>
+        <div style="display: flex; justify-content: space-between; color: #555;"><span>(-) Provisional Fee Reserve (Commission + Tax):</span> <span id="wf-fees">$3,000.00</span></div>
+        <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 1px dashed var(--line); padding-top: 0.25rem;"><span>(=) Investable Capital:</span> <span id="wf-investable">$472,000.00</span></div>
+        <div style="display: flex; justify-content: space-between; color: #555;"><span>(+) Existing Holdings Market Value:</span> <span id="wf-existing-add">$0.00</span></div>
+        <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 1px solid var(--ink); padding-top: 0.25rem; font-size: 1rem;"><span>(=) Target Portfolio Value:</span> <strong id="wf-target">$472,000.00</strong></div>
+      </div>
+
+      <h3>Strategic Bucket Weights (<span id="weight-mode-label">Formula-Derived from R=0.5</span>)</h3>
+      <div id="bucket-stacked-bar" style="display: flex; height: 32px; border-radius: 4px; overflow: hidden; border: 1px solid var(--line); margin: 0.75rem 0;">
+        <!-- Filled dynamically -->
+      </div>
+      <div id="bucket-breakdown-list" style="display: grid; gap: 0.5rem; margin-top: 0.75rem; font-size: 0.9rem;">
+        <!-- Filled dynamically -->
+      </div>
+    </section>
+
+    <!-- API KEYS CONFIGURATION -->
+    <section class="panel" id="api-keys-panel">
+      <details>
+        <summary style="cursor: pointer; font-family: 'Menlo', 'Courier New', monospace; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em;"><strong>API Keys Configuration</strong> (Twelve Data, FMP, Finnhub, OpenRouter)</summary>
+        <div class="api-keys-content" style="margin-top: 1rem; display: grid; gap: 1rem;">
+          <div class="field-group">
+            <label for="twelvedata-key">Twelve Data API Key (Price Data)</label>
+            <div class="key-input-wrapper" style="display: flex; align-items: center; gap: 0.5rem;">
+              <input id="twelvedata-key" type="password" placeholder="Twelve Data API Key" style="flex: 1;" />
+              <span id="twelvedata-note" class="env-note" style="display:none; color: #2e7d32; font-size: 0.8rem; font-family: monospace; white-space: nowrap;">✓ loaded from environment</span>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label for="fmp-key">FMP API Key (Fundamentals)</label>
+            <div class="key-input-wrapper" style="display: flex; align-items: center; gap: 0.5rem;">
+              <input id="fmp-key" type="password" placeholder="FMP API Key" style="flex: 1;" />
+              <span id="fmp-note" class="env-note" style="display:none; color: #2e7d32; font-size: 0.8rem; font-family: monospace; white-space: nowrap;">✓ loaded from environment</span>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label for="finnhub-key">Finnhub API Key (News Headlines)</label>
+            <div class="key-input-wrapper" style="display: flex; align-items: center; gap: 0.5rem;">
+              <input id="finnhub-key" type="password" placeholder="Finnhub API Key" style="flex: 1;" />
+              <span id="finnhub-note" class="env-note" style="display:none; color: #2e7d32; font-size: 0.8rem; font-family: monospace; white-space: nowrap;">✓ loaded from environment</span>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label for="openrouter-key">OpenRouter API Key (Sentiment & Summary)</label>
+            <div class="key-input-wrapper" style="display: flex; align-items: center; gap: 0.5rem;">
+              <input id="openrouter-key" type="password" placeholder="sk-or-..." style="flex: 1;" />
+              <span id="openrouter-note" class="env-note" style="display:none; color: #2e7d32; font-size: 0.8rem; font-family: monospace; white-space: nowrap;">✓ loaded from environment</span>
+            </div>
+          </div>
+
+          <button type="button" id="clear-keys-btn" style="background: var(--error); margin-top: 0.5rem;">Clear Saved Keys</button>
+        </div>
+      </details>
+    </section>
+
+    <!-- RUN ANALYSIS BUTTON -->
+    <section class="panel" style="text-align: center; padding: 1.25rem;">
+      <div style="display: flex; justify-content: center; align-items: center; gap: 1rem; margin-bottom: 0.75rem;">
+        <label style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; cursor: pointer;">
+          <input type="checkbox" id="force-refresh-checkbox" style="width: auto;" /> Force refresh cache (bypass stored API responses)
+        </label>
+      </div>
+      <button type="button" id="run-analysis-btn" style="font-size: 1.1rem; padding: 0.8rem 2rem; width: 100%;">Run Portfolio Analysis</button>
+      <div id="analysis-progress" style="margin-top: 0.75rem; font-family: monospace; font-weight: bold; color: var(--accent); min-height: 1.5rem;"></div>
+    </section>
+
+    <!-- RESULTS PANEL -->
     <section class="panel" id="results">
-      <p class="placeholder">Results will appear here once you wire up data fetching and your LLM call.</p>
+      <h2>3. Universe Price Data & Status</h2>
+      <p class="placeholder">Click "Run Portfolio Analysis" above to fetch benchmark (SPY) and 20 universe equities with throttled queue and caching.</p>
+      
+      <!-- DIAGNOSTIC PANEL FOR MSFT -->
+      <div id="msft-diagnostic-container" style="margin-top: 1.5rem; display: none; background: #fff; border: 2px solid var(--accent); padding: 1rem; border-radius: 6px;">
+        <h3 style="margin-top: 0; font-size: 1.1rem; color: var(--accent);">MSFT Data & Indicator Diagnostics</h3>
+        <div id="msft-diagnostic-content" style="font-family: monospace; font-size: 0.85rem; display: grid; gap: 0.4rem; color: #333;"></div>
+      </div>
+
+      <div id="stocks-data-list" style="margin-top: 1rem;"></div>
     </section>
   </main>
 
-  <footer class="app-footer">
-    <p>Replace this scaffold with your own build. See README.md for setup notes.</p>
+  <footer class="app-footer" id="app-footer">
+    <!-- Disclaimer rendered by main.js -->
   </footer>
 
   <script type="module" src="./main.js"></script>

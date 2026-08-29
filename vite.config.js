@@ -4,4 +4,9 @@ import { defineConfig } from 'vite';
 // subpath like https://<user>.github.io/<repo>/ regardless of repo name.
 export default defineConfig({
   base: './',
+  server: {
+    host: '0.0.0.0',
+    port: 3000,
+    allowedHosts: true,
+  },
 });

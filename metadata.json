@@ -1,0 +1,6 @@
+{
+  "name": "GenAI Finance Dashboard",
+  "description": "GenAI-powered financial analysis dashboard for stock ticker research using Twelve Data and OpenRouter",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
