@@ -56,6 +56,8 @@ const CONFIG = {
 
   confidenceBands: { high: 80, medium: 60, low: 40 },
 
+  excludeBelowBothMovingAverages: true,
+
   regimeOverlay: { enabled: false, cap: 0.10 },    // optional, Prompt 15
 
   indicators: { rsiPeriod: 14, macdFast: 12, macdSlow: 26, macdSignal: 9,
@@ -918,6 +920,7 @@ function computeRiskScoreAndFinal(portfolioState) {
               <div style="font-size: 0.7rem; color: #555; margin-top: 0.2rem;">
                 + <strong>${s.topContributors?.join(', ') || 'N/A'}</strong> | - <strong>${s.topDetractors?.join(', ') || 'N/A'}</strong>
               </div>
+              ${s.technical?.belowBothMAs ? `<div style="margin-top: 0.35rem; color: #d97706; font-weight: bold; font-size: 0.75rem;">DOWNTREND: price below both SMA50 and SMA200</div>` : ''}
               ${s.existingShares > 0 ? `<div style="margin-top: 0.25rem; color: #1565c0;">Existing Holding: ${s.existingShares.toLocaleString()} shares</div>` : ''}
             </div>
           `}
@@ -1039,6 +1042,9 @@ function computeRiskScoreAndFinal(portfolioState) {
               sma50Arr,
               sma200Arr,
               indicators,
+              technical: { 
+                belowBothMAs: (latestBar.close < indicators.sma50) && (latestBar.close < indicators.sma200)
+              },
               status: 'validated'
             };
 
