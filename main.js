@@ -22,7 +22,12 @@ const CONFIG = {
   },
 
   qualityGate: { steady: 55, growth: 35, cyclical: 40, defensive: 60 },
-  qualityWeights: { revenueGrowth: 0.40, roe: 0.35, debtEquity: 0.25 },
+  qualityWeights: {
+    steady:    { revenueGrowth: 0.30, roe: 0.40, debtEquity: 0.30 },
+    growth:    { revenueGrowth: 0.55, roe: 0.35, debtEquity: 0.10 },
+    cyclical:  { revenueGrowth: 0.35, roe: 0.30, debtEquity: 0.35 },
+    defensive: { revenueGrowth: 0.15, roe: 0.40, debtEquity: 0.45 }
+  },
 
   qualificationThreshold: 50,     // final score below this does not qualify
   weightingMethod: "inverseVolatility",  // | "scoreProportional" | "equalWeight"
@@ -79,6 +84,15 @@ function assertScoreWeights() {
     const sum = weights.trend + weights.momentum + weights.risk + weights.volume + weights.sentiment;
     if (Math.abs(sum - 1.0) > 1e-5) {
       console.error(`CRITICAL: scoreWeights for bucket '${bucket}' sum to ${sum.toFixed(4)}, not 1.00!`);
+    }
+  }
+
+  const qualBuckets = Object.keys(CONFIG.qualityWeights);
+  for (const bucket of qualBuckets) {
+    const weights = CONFIG.qualityWeights[bucket];
+    const sum = weights.revenueGrowth + weights.roe + weights.debtEquity;
+    if (Math.abs(sum - 1.0) > 1e-5) {
+      console.error(`CRITICAL: qualityWeights for bucket '${bucket}' sum to ${sum.toFixed(4)}, not 1.00!`);
     }
   }
 }
@@ -608,21 +622,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     debtEquity: ['totalDebt/totalEquityAnnual', 'totalDebt/totalEquityQuarterly', 'debtEquityAnnual', 'longTermDebt/equityAnnual']
                 };
 
-                function extractAndNormalize(metricData, keys) {
+                function extractAndNormalize(metricData, keys, divideBy100) {
                     for (const key of keys) {
                         if (metricData[key] !== undefined && metricData[key] !== null) {
                             let val = metricData[key];
-                            let isPercentage = Math.abs(val) > 3; // heuristic to guess if it's already % format
-                            let normalized = isPercentage ? val / 100 : val;
-                            return { key, raw: val, normalized, isPercentage };
+                            let normalized = divideBy100 ? val / 100 : val;
+                            return { key, raw: val, normalized };
                         }
                     }
-                    return { key: null, raw: null, normalized: null, isPercentage: null };
+                    return { key: null, raw: null, normalized: null };
                 }
 
-                const revGrowth = extractAndNormalize(data.metric, candidates.revenueGrowth);
-                const roeData = extractAndNormalize(data.metric, candidates.roe);
-                const debtEq = extractAndNormalize(data.metric, candidates.debtEquity);
+                const revGrowth = extractAndNormalize(data.metric, candidates.revenueGrowth, true);
+                const roeData = extractAndNormalize(data.metric, candidates.roe, true);
+                const debtEq = extractAndNormalize(data.metric, candidates.debtEquity, false);
 
                 result.revenueGrowth = revGrowth.normalized;
                 result.roe = roeData.normalized;
@@ -1256,7 +1269,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     // Revenue Growth Score (0 to 100, target 15%)
     if (fundamentals.revenueGrowth !== null && fundamentals.revenueGrowth !== undefined && !Number.isNaN(fundamentals.revenueGrowth)) {
         let s = Math.max(0, Math.min(100, (fundamentals.revenueGrowth / 0.15) * 100));
-        revenueScore = s * CONFIG.qualityWeights.revenueGrowth;
+        revenueScore = s * CONFIG.qualityWeights[stock.bucket].revenueGrowth;
         score += revenueScore;
     } else {
         missing.push('revenueGrowth');
@@ -1266,7 +1279,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     // ROE Score (0 to 100, target 20%)
     if (fundamentals.roe !== null && fundamentals.roe !== undefined && !Number.isNaN(fundamentals.roe)) {
         let s = Math.max(0, Math.min(100, (fundamentals.roe / 0.20) * 100));
-        roeScore = s * CONFIG.qualityWeights.roe;
+        roeScore = s * CONFIG.qualityWeights[stock.bucket].roe;
         score += roeScore;
     } else {
         missing.push('roe');
@@ -1276,7 +1289,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     // Debt to Equity Score (0 to 100, lower is better, target < 1, 0 at 2)
     if (fundamentals.debtEquity !== null && fundamentals.debtEquity !== undefined && !Number.isNaN(fundamentals.debtEquity)) {
         let s = Math.max(0, Math.min(100, 100 - (fundamentals.debtEquity / 2) * 100));
-        debtScore = s * CONFIG.qualityWeights.debtEquity;
+        debtScore = s * CONFIG.qualityWeights[stock.bucket].debtEquity;
         score += debtScore;
     } else {
         missing.push('debtEquity');
@@ -1358,7 +1371,53 @@ function computeRiskScoreAndFinal(portfolioState) {
     return String(val);
   }
 
+  function renderQualitySummary() {
+    const summaryContainer = document.getElementById('quality-summary-content');
+    if (!summaryContainer) return;
+
+    let validStocks = portfolioState.stocks.filter(s => s.quality && s.quality.score !== undefined);
+    
+    // Sort highest to lowest
+    validStocks.sort((a, b) => b.quality.score - a.quality.score);
+
+    let html = '';
+    let passCount = 0;
+    let failCount = 0;
+
+    validStocks.forEach(s => {
+      let isPass = s.quality.passed || s.quality.score >= s.quality.threshold;
+      if (isPass) passCount++;
+      else failCount++;
+
+      let statusText = isPass ? '<span style="color: #2e7d32;">PASS</span>' : '<span style="color: var(--error);">FAIL</span>';
+      html += `<div><strong>${s.ticker}</strong> (${s.bucket}) &mdash; quality ${s.quality.score.toFixed(1)} | threshold ${s.quality.threshold} | ${statusText}</div>`;
+    });
+
+    if (validStocks.length > 0) {
+      let highest = validStocks[0].quality.score;
+      let lowest = validStocks[validStocks.length - 1].quality.score;
+      
+      let median;
+      let mid = Math.floor(validStocks.length / 2);
+      if (validStocks.length % 2 === 0) {
+        median = (validStocks[mid - 1].quality.score + validStocks[mid].quality.score) / 2;
+      } else {
+        median = validStocks[mid].quality.score;
+      }
+
+      html += `<div style="margin-top: 1rem; border-top: 1px dashed #ccc; padding-top: 0.5rem;">`;
+      html += `<div><strong>Passing:</strong> ${passCount} | <strong>Failing:</strong> ${failCount}</div>`;
+      html += `<div><strong>Highest:</strong> ${highest.toFixed(1)} | <strong>Lowest:</strong> ${lowest.toFixed(1)} | <strong>Median:</strong> ${median.toFixed(1)}</div>`;
+      html += `</div>`;
+    } else {
+      html = 'No quality data available yet.';
+    }
+
+    summaryContainer.innerHTML = html;
+  }
+
   function renderDiagnosticsTable() {
+    renderQualitySummary();
     if (!diagTableBody) return;
     let html = '';
 
@@ -1592,9 +1651,9 @@ function computeRiskScoreAndFinal(portfolioState) {
       html += `
         <div style="margin-top: 8px; border-top: 1px solid #ddd; padding-top: 8px;"><strong>Fundamentals Diagnostics:</strong></div>
         <div>8. Finnhub Call Succeeded: <strong>${fund.finnhubCallSucceeded !== undefined ? fund.finnhubCallSucceeded : 'null'}</strong> (Status: <strong>${fund.finnhubStatus || 'null'}</strong>)</div>
-        <div>9. revenueGrowth (Raw): <strong>${rawFmt(fund.rawVals?.revenueGrowth)}</strong> (Used Key: <strong>${fund.usedKeys?.revenueGrowth || 'None'}</strong>)</div>
-        <div>10. roe (Raw): <strong>${rawFmt(fund.rawVals?.roe)}</strong> (Used Key: <strong>${fund.usedKeys?.roe || 'None'}</strong>)</div>
-        <div>11. debtEquity (Raw): <strong>${rawFmt(fund.rawVals?.debtEquity)}</strong> (Used Key: <strong>${fund.usedKeys?.debtEquity || 'None'}</strong>)</div>
+        <div>9. revenueGrowth: <strong>${rawFmt(fund.rawVals?.revenueGrowth)}</strong> raw -> <strong>${rawFmt(fund.revenueGrowth)}</strong> normalised (Used Key: <strong>${fund.usedKeys?.revenueGrowth || 'None'}</strong>)</div>
+        <div>10. roe: <strong>${rawFmt(fund.rawVals?.roe)}</strong> raw -> <strong>${rawFmt(fund.roe)}</strong> normalised (Used Key: <strong>${fund.usedKeys?.roe || 'None'}</strong>)</div>
+        <div>11. debtEquity: <strong>${rawFmt(fund.rawVals?.debtEquity)}</strong> raw -> <strong>${rawFmt(fund.debtEquity)}</strong> normalised (Used Key: <strong>${fund.usedKeys?.debtEquity || 'None'}</strong>)</div>
         <div>12. Scores -> Rev: <strong>${rawFmt(qual.revenueScore)}</strong>, ROE: <strong>${rawFmt(qual.roeScore)}</strong>, Debt: <strong>${rawFmt(qual.debtScore)}</strong> | Total Quality: <strong>${rawFmt(qual.score)}</strong> (vs Threshold: <strong>${rawFmt(qual.threshold)}</strong>)</div>
         <div style="margin-top: 8px; border-top: 1px dashed #ccc; padding-top: 8px;"><strong>Fetch Execution Diagnostics:</strong></div>
         <div>13. finnhubKeyPresent: <strong>${fund.debug?.fmpKeyPresent !== undefined ? fund.debug.fmpKeyPresent : 'undefined'}</strong> (Length: <strong>${fund.debug?.keyLength !== undefined ? fund.debug.keyLength : 'undefined'}</strong>)</div>
@@ -1604,14 +1663,15 @@ function computeRiskScoreAndFinal(portfolioState) {
       `;
 
       if (targetStock.ticker === 'MSFT') {
-        const ratiosKeys = fund.msftRawRatios || [];
-        const growthKeys = fund.msftRawGrowth || [];
         const finnhubKeys = fund.msftRawFinnhub || [];
         html += `
           <div style="margin-top: 8px; border-top: 1px solid #ddd; padding-top: 8px; color: #555;">
-            <strong>MSFT Raw Finnhub Keys:</strong> ${finnhubKeys.join(', ') || 'None'}<br>
-            <strong>MSFT Raw Ratios Keys:</strong> ${ratiosKeys.join(', ') || 'None'}<br>
-            <strong>MSFT Raw Growth Keys:</strong> ${growthKeys.join(', ') || 'None'}
+            <details>
+              <summary style="cursor: pointer; font-weight: bold; margin-bottom: 4px;">Show raw API keys</summary>
+              <div style="font-size: 0.75rem; line-height: 1.4;">
+                ${finnhubKeys.join(', ') || 'None'}
+              </div>
+            </details>
           </div>
         `;
       }
