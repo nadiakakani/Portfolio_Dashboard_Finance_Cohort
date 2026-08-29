@@ -208,6 +208,15 @@
                 <th style="padding: 6px;">Vol Ratio</th>
                 <th style="padding: 6px;">Ret(63d)</th>
                 <th style="padding: 6px;">Below MAs</th>
+                <th style="padding: 6px;">FMP OK/Status</th>
+                <th style="padding: 6px;">RevGrw (Raw)</th>
+                <th style="padding: 6px;">ROE (Raw)</th>
+                <th style="padding: 6px;">DebtEq (Raw)</th>
+                <th style="padding: 6px;">RevScore</th>
+                <th style="padding: 6px;">ROEScore</th>
+                <th style="padding: 6px;">DebtScore</th>
+                <th style="padding: 6px;">Quality</th>
+                <th style="padding: 6px;">Threshold</th>
                 <th style="padding: 6px;">Trend</th>
                 <th style="padding: 6px;">Momentum</th>
                 <th style="padding: 6px;">Risk</th>
@@ -231,9 +240,13 @@
             <!-- Options added dynamically -->
           </select>
         </div>
-        <div id="deep-diagnostic-container" style="display: none; background: #fff; border: 2px solid var(--accent); padding: 1rem; border-radius: 6px;">
+        <div id="deep-diagnostic-container" style="display: none; background: #fff; border: 2px solid var(--accent); padding: 1rem; border-radius: 6px; margin-bottom: 1rem;">
           <h3 id="deep-diagnostic-title" style="margin-top: 0; font-size: 1.1rem; color: var(--accent);">Ticker Diagnostics</h3>
           <div id="deep-diagnostic-content" style="font-family: monospace; font-size: 0.85rem; display: grid; gap: 0.4rem; color: #333;"></div>
+        </div>
+        <div id="msft-raw-fields" style="background: #fff; border: 2px solid var(--ink); padding: 1rem; border-radius: 6px; display: none;">
+          <h3 style="margin-top: 0; font-size: 1.1rem; color: var(--ink);">Raw FMP Fields (MSFT)</h3>
+          <div id="msft-raw-fields-content" style="font-family: monospace; font-size: 0.8rem; overflow-x: auto; white-space: pre-wrap; color: #333;"></div>
         </div>
       </section>
 

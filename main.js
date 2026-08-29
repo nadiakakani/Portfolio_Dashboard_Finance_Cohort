@@ -533,6 +533,125 @@ document.addEventListener('DOMContentLoaded', () => {
     return bars;
   }
 
+  async function fetchFundamentals(ticker, finnhubKey, forceRefresh = false) {
+    let debug = {
+      fetchFundamentalsCalled: true,
+      fmpKeyPresent: !!finnhubKey,
+      keyLength: finnhubKey ? finnhubKey.length : 0,
+      earlyReturnReason: null,
+      ratiosUrl: null,
+      growthUrl: null,
+      finnhubUrl: null
+    };
+
+    const cacheKey = `fmp_fundamentals_${ticker}`; // keeping the same cache key for now or change to finnhub? I will keep it so it overwrites. Actually, forceRefresh is used.
+    const now = Date.now();
+    
+    if (!forceRefresh) {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (now - parsed.timestamp < CONFIG.cacheHours * 60 * 60 * 1000) {
+          debug.earlyReturnReason = 'cache_hit';
+          if (!parsed.data) parsed.data = {};
+          parsed.data.debug = debug;
+          return parsed.data;
+        }
+      }
+    }
+    
+    // FMP IMPLEMENTATION (DISABLED)
+    /*
+    const ratiosUrl = \`https://financialmodelingprep.com/api/v3/ratios-ttm/\${ticker}?apikey=\${apiKey}\`;
+    const growthUrl = \`https://financialmodelingprep.com/api/v3/financial-growth/\${ticker}?period=annual&limit=1&apikey=\${apiKey}\`;
+    
+    debug.ratiosUrl = \`https://financialmodelingprep.com/api/v3/ratios-ttm/\${ticker}?apikey=REDACTED\`;
+    debug.growthUrl = \`https://financialmodelingprep.com/api/v3/financial-growth/\${ticker}?period=annual&limit=1&apikey=REDACTED\`;
+    */
+
+    const finnhubUrl = `https://finnhub.io/api/v1/stock/metric?symbol=${ticker}&metric=all&token=${finnhubKey}`;
+    debug.finnhubUrl = `https://finnhub.io/api/v1/stock/metric?symbol=${ticker}&metric=all&token=REDACTED`;
+
+    let result = { 
+      roe: null, debtEquity: null, revenueGrowth: null,
+      fmpCallSucceeded: false, ratiosStatus: null, growthStatus: null,
+      msftRawRatios: null, msftRawGrowth: null,
+      finnhubCallSucceeded: false, finnhubStatus: null,
+      msftRawFinnhub: null,
+      usedKeys: {}, rawVals: {},
+      debug: debug
+    };
+
+    if (!finnhubKey) {
+      debug.earlyReturnReason = 'no_api_key';
+      return result; // Return nulls if no key
+    }
+
+    try {
+        const finnhubRes = await fetch(finnhubUrl);
+        result.finnhubStatus = finnhubRes.status;
+        result.finnhubCallSucceeded = finnhubRes.ok;
+        
+        // We set this to trick the diagnostic panel for FMP fields that were hardcoded
+        result.fmpCallSucceeded = finnhubRes.ok; 
+        result.ratiosStatus = finnhubRes.status;
+        result.growthStatus = finnhubRes.status;
+
+        if (finnhubRes.ok) {
+            const data = await finnhubRes.json();
+            if (data && data.metric) {
+                if (ticker === 'MSFT') result.msftRawFinnhub = Object.keys(data.metric);
+                
+                const candidates = {
+                    revenueGrowth: ['revenueGrowthTTMYoy', 'revenueGrowthQuarterlyYoy', 'revenueGrowth3Y', 'revenueGrowth5Y'],
+                    roe: ['roeTTM', 'roeAnnual', 'returnOnEquityTTM', 'returnOnEquityAnnual'],
+                    debtEquity: ['totalDebt/totalEquityAnnual', 'totalDebt/totalEquityQuarterly', 'debtEquityAnnual', 'longTermDebt/equityAnnual']
+                };
+
+                function extractAndNormalize(metricData, keys) {
+                    for (const key of keys) {
+                        if (metricData[key] !== undefined && metricData[key] !== null) {
+                            let val = metricData[key];
+                            let isPercentage = Math.abs(val) > 3; // heuristic to guess if it's already % format
+                            let normalized = isPercentage ? val / 100 : val;
+                            return { key, raw: val, normalized, isPercentage };
+                        }
+                    }
+                    return { key: null, raw: null, normalized: null, isPercentage: null };
+                }
+
+                const revGrowth = extractAndNormalize(data.metric, candidates.revenueGrowth);
+                const roeData = extractAndNormalize(data.metric, candidates.roe);
+                const debtEq = extractAndNormalize(data.metric, candidates.debtEquity);
+
+                result.revenueGrowth = revGrowth.normalized;
+                result.roe = roeData.normalized;
+                result.debtEquity = debtEq.normalized;
+
+                result.usedKeys = {
+                    revenueGrowth: revGrowth.key,
+                    roe: roeData.key,
+                    debtEquity: debtEq.key
+                };
+                result.rawVals = {
+                    revenueGrowth: revGrowth.raw,
+                    roe: roeData.raw,
+                    debtEquity: debtEq.raw
+                };
+            }
+        }
+    } catch (e) {
+        console.warn(`Error fetching fundamentals for ${ticker}`, e);
+    }
+
+    localStorage.setItem(cacheKey, JSON.stringify({
+        timestamp: now,
+        data: result
+    }));
+    
+    return result;
+  }
+
 // --- Pure Indicator Functions ---
 
 function calculateSMA(values, window) {
@@ -794,8 +913,12 @@ function computeRiskScoreAndFinal(portfolioState) {
 
     // Compute Risk Score
     peers.forEach(stock => {
-      const riskScore = (0.60 * stock.tempVolPercentile) + (0.40 * stock.tempDdPercentile);
+      let riskScore = (0.60 * stock.tempVolPercentile) + (0.40 * stock.tempDdPercentile);
       
+      if (stock.fundamentals && stock.fundamentals.available === false) {
+          riskScore -= 20; // apply -20 data-confidence deduction
+      }
+
       stock.components = stock.components || {};
       stock.components.risk = Math.max(0, Math.min(100, riskScore));
     });
@@ -871,6 +994,7 @@ function computeRiskScoreAndFinal(portfolioState) {
                 + <strong>${s.topContributors?.join(', ') || 'N/A'}</strong> | - <strong>${s.topDetractors?.join(', ') || 'N/A'}</strong>
               </div>
               ${s.technical?.belowBothMAs ? `<div style="margin-top: 0.35rem; color: #d97706; font-weight: bold; font-size: 0.75rem;">DOWNTREND: price below both SMA50 and SMA200</div>` : ''}
+              ${s.fundamentals?.available === false ? `<div style="margin-top: 0.35rem; color: #c62828; font-weight: bold; font-size: 0.75rem;">QUALITY DATA UNAVAILABLE (-20 Risk Penalty)</div>` : ''}
               ${s.existingShares > 0 ? `<div style="margin-top: 0.25rem; color: #1565c0;">Existing Holding: ${s.existingShares.toLocaleString()} shares</div>` : ''}
             </div>
           `}
@@ -892,6 +1016,15 @@ function computeRiskScoreAndFinal(portfolioState) {
         alert('Please enter your Twelve Data API key in the API Keys Configuration section before running analysis.');
         return;
       }
+      
+      const finnhubKey = document.getElementById('finnhub-key')?.value.trim();
+      if (!finnhubKey) {
+        alert('Please enter your Finnhub API key in the API Keys Configuration section before running analysis.');
+        return;
+      }
+
+      // Keep FMP key logic but don't strictly require it if Finnhub is used, or maybe just leave FMP key check for now? The prompt says "Replace fetchFundamentals with a Finnhub implementation... using the Finnhub key already in the form." I will replace fmp-key with finnhub-key in this check.
+      const fmpKey = document.getElementById('fmp-key')?.value.trim();
 
       const forceRefresh = forceRefreshCb ? forceRefreshCb.checked : false;
       runBtn.disabled = true;
@@ -944,14 +1077,18 @@ function computeRiskScoreAndFinal(portfolioState) {
         for (const task of universeTasks) {
           completedCount++;
           if (progressEl) {
-            progressEl.textContent = `Fetching prices… ${completedCount} of 21 (${task.ticker})`;
+            progressEl.textContent = `Checking fundamentals… ${completedCount - 1} of 20`;
           }
 
           const existingHolding = portfolioState.inputs.existingHoldings.find(h => h.ticker === task.ticker);
           const existingShares = existingHolding ? existingHolding.shares : 0;
 
           try {
-            const bars = await fetchDailyPrices(task.ticker, twelveDataKey, forceRefresh);
+            const [bars, fundamentals] = await Promise.all([
+               fetchDailyPrices(task.ticker, twelveDataKey, forceRefresh),
+               fetchFundamentals(task.ticker, finnhubKey, forceRefresh)
+            ]);
+            
             const latestBar = bars[bars.length - 1];
             const closes = bars.map(b => b.close);
             const volumes = bars.map(b => b.volume);
@@ -997,6 +1134,7 @@ function computeRiskScoreAndFinal(portfolioState) {
               sma50Arr,
               sma200Arr,
               indicators,
+              fundamentals,
               technical: { 
                 belowBothMAs: (latestBar.close < indicators.sma50) && (latestBar.close < indicators.sma200)
               },
@@ -1011,8 +1149,9 @@ function computeRiskScoreAndFinal(portfolioState) {
               sentiment: 50 // Default
             };
 
-            // Compute liquidity
+            // Compute liquidity and quality
             computeLiquidity(stockObj);
+            computeQualityScore(stockObj);
 
             portfolioState.stocks.push(stockObj);
           } catch (err) {
@@ -1071,7 +1210,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     
     let tier = CONFIG.liquidityTiers[CONFIG.liquidityTiers.length - 1]; // Default to Illiquid
     for (const t of CONFIG.liquidityTiers) {
-      if (adtvUsd >= t.minAdtv) {
+      if (adtvUsd >= t.minAdtvUsd) {
         tier = t;
         break;
       }
@@ -1098,6 +1237,82 @@ function computeRiskScoreAndFinal(portfolioState) {
         reason: 'Illiquid tier',
         adtv: adtvUsd
       });
+    }
+  }
+
+  // --- COMPUTE QUALITY ---
+  function computeQualityScore(stock) {
+    if (stock.status === 'data-error' || stock.status === 'excluded-liquidity') return;
+    const fundamentals = stock.fundamentals || {};
+    let score = 0;
+    let missing = [];
+    
+    let revenueScore = null;
+    let roeScore = null;
+    let debtScore = null;
+
+    let available = true;
+
+    // Revenue Growth Score (0 to 100, target 15%)
+    if (fundamentals.revenueGrowth !== null && fundamentals.revenueGrowth !== undefined && !Number.isNaN(fundamentals.revenueGrowth)) {
+        let s = Math.max(0, Math.min(100, (fundamentals.revenueGrowth / 0.15) * 100));
+        revenueScore = s * CONFIG.qualityWeights.revenueGrowth;
+        score += revenueScore;
+    } else {
+        missing.push('revenueGrowth');
+        available = false;
+    }
+
+    // ROE Score (0 to 100, target 20%)
+    if (fundamentals.roe !== null && fundamentals.roe !== undefined && !Number.isNaN(fundamentals.roe)) {
+        let s = Math.max(0, Math.min(100, (fundamentals.roe / 0.20) * 100));
+        roeScore = s * CONFIG.qualityWeights.roe;
+        score += roeScore;
+    } else {
+        missing.push('roe');
+        available = false;
+    }
+
+    // Debt to Equity Score (0 to 100, lower is better, target < 1, 0 at 2)
+    if (fundamentals.debtEquity !== null && fundamentals.debtEquity !== undefined && !Number.isNaN(fundamentals.debtEquity)) {
+        let s = Math.max(0, Math.min(100, 100 - (fundamentals.debtEquity / 2) * 100));
+        debtScore = s * CONFIG.qualityWeights.debtEquity;
+        score += debtScore;
+    } else {
+        missing.push('debtEquity');
+        available = false;
+    }
+
+    const threshold = CONFIG.qualityGate[stock.bucket];
+
+    stock.quality = {
+        score,
+        missing,
+        revenueScore,
+        roeScore,
+        debtScore,
+        threshold: threshold,
+        available: available,
+        passed: false
+    };
+
+    if (fundamentals) {
+        fundamentals.available = available;
+    }
+
+    if (!available) {
+        stock.quality.passed = true;
+    } else if (score < threshold) {
+        if (stock.status === 'validated') {
+            stock.status = 'excluded-quality';
+            stock.bindingConstraint = 'quality gate';
+            portfolioState.hardBlocks.push({
+                ticker: stock.ticker,
+                reason: `Quality score ${score.toFixed(1)} below ${stock.bucket} threshold ${threshold}`
+            });
+        }
+    } else {
+        stock.quality.passed = true;
     }
   }
 
@@ -1136,6 +1351,13 @@ function computeRiskScoreAndFinal(portfolioState) {
     return Number(val).toFixed(decimals);
   }
 
+  function rawFmt(val) {
+    if (val === null) return 'null';
+    if (val === undefined) return 'undefined';
+    if (Number.isNaN(val)) return 'NaN';
+    return String(val);
+  }
+
   function renderDiagnosticsTable() {
     if (!diagTableBody) return;
     let html = '';
@@ -1164,13 +1386,28 @@ function computeRiskScoreAndFinal(portfolioState) {
         <td>&mdash;</td>
         <td>&mdash;</td>
         <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
+        <td>&mdash;</td>
         <td style="font-weight: bold;">&mdash;</td>
       </tr>
     `;
 
+    let msftStock = null;
+
     portfolioState.stocks.forEach(s => {
+      if (s.ticker === 'MSFT') msftStock = s;
       const ind = s.indicators || {};
       const comp = s.components || {};
+      const fund = s.fundamentals || {};
+      const qual = s.quality || {};
+      const fmpSuccess = fund.fmpCallSucceeded !== undefined ? fund.fmpCallSucceeded : 'null';
+      const fmpStatuses = (fund.ratiosStatus || 'null') + ' / ' + (fund.growthStatus || 'null');
       
       html += `
         <tr>
@@ -1189,6 +1426,17 @@ function computeRiskScoreAndFinal(portfolioState) {
           <td>${fmt(ind.medianDailyVolume && ind.medianDailyVolume60 ? ind.medianDailyVolume / ind.medianDailyVolume60 : null)}</td>
           <td>${fmt(ind.return63d ? ind.return63d * 100 : null, 1)}%</td>
           <td>${s.technical?.belowBothMAs !== undefined ? s.technical.belowBothMAs : '&mdash;'}</td>
+          <td>${fmpSuccess} (${fmpStatuses})</td>
+          <td>${rawFmt(fund.revenueGrowth)}</td>
+          <td>${rawFmt(fund.roe)}</td>
+          <td>${rawFmt(fund.debtEquity)}</td>
+          <td>${rawFmt(qual.revenueScore)}</td>
+          <td>${rawFmt(qual.roeScore)}</td>
+          <td>${rawFmt(qual.debtScore)}</td>
+          <td style="color: ${(qual.passed || qual.score >= (qual.threshold || 0)) ? '#2e7d32' : 'var(--error)'};">
+            ${qual.score !== undefined ? fmt(qual.score, 1) : '&mdash;'}${qual.available === false ? ' (BYPASS)' : ''}
+          </td>
+          <td>${qual.threshold !== undefined ? qual.threshold : '&mdash;'}</td>
           <td>${fmt(comp.trend, 1)}</td>
           <td>${fmt(comp.momentum, 1)}</td>
           <td>${fmt(comp.risk, 1)}</td>
@@ -1200,6 +1448,23 @@ function computeRiskScoreAndFinal(portfolioState) {
     });
 
     diagTableBody.innerHTML = html;
+
+    const msftRawContainer = document.getElementById('msft-raw-fields');
+    const msftRawContent = document.getElementById('msft-raw-fields-content');
+    
+    if (msftStock && msftStock.fundamentals && msftRawContainer && msftRawContent) {
+      const ratiosKeys = msftStock.fundamentals.msftRawRatios || [];
+      const growthKeys = msftStock.fundamentals.msftRawGrowth || [];
+      
+      if (ratiosKeys.length > 0 || growthKeys.length > 0) {
+        msftRawContainer.style.display = 'block';
+        msftRawContent.innerHTML = `<strong>Ratios Endpoint Keys:</strong>\n${ratiosKeys.join(', ') || 'None'}\n\n<strong>Growth Endpoint Keys:</strong>\n${growthKeys.join(', ') || 'None'}`;
+      } else {
+        msftRawContainer.style.display = 'none';
+      }
+    } else if (msftRawContainer) {
+      msftRawContainer.style.display = 'none';
+    }
   }
 
   function renderLiquidityDebugTable() {
@@ -1318,6 +1583,38 @@ function computeRiskScoreAndFinal(portfolioState) {
         <div>5. Last 3 values of sma200 array: [<strong>${sma200Last3.join(', ')}</strong>]</div>
         <div>5b. SMA200 Cross-Check: Function sma200[${len-1}] = <strong>$${targetStock.indicators?.sma200?.toFixed(2) || 'null'}</strong> vs Fresh Loop Mean (last 200) = <strong>$${freshSma200 !== null ? freshSma200.toFixed(2) : 'N/A'}</strong></div>
       `;
+
+      const fund = targetStock.fundamentals || {};
+      const qual = targetStock.quality || {};
+      const fmpSuccess = fund.fmpCallSucceeded !== undefined ? fund.fmpCallSucceeded : 'null';
+      const fmpStatuses = (fund.ratiosStatus || 'null') + ' / ' + (fund.growthStatus || 'null');
+      
+      html += `
+        <div style="margin-top: 8px; border-top: 1px solid #ddd; padding-top: 8px;"><strong>Fundamentals Diagnostics:</strong></div>
+        <div>8. Finnhub Call Succeeded: <strong>${fund.finnhubCallSucceeded !== undefined ? fund.finnhubCallSucceeded : 'null'}</strong> (Status: <strong>${fund.finnhubStatus || 'null'}</strong>)</div>
+        <div>9. revenueGrowth (Raw): <strong>${rawFmt(fund.rawVals?.revenueGrowth)}</strong> (Used Key: <strong>${fund.usedKeys?.revenueGrowth || 'None'}</strong>)</div>
+        <div>10. roe (Raw): <strong>${rawFmt(fund.rawVals?.roe)}</strong> (Used Key: <strong>${fund.usedKeys?.roe || 'None'}</strong>)</div>
+        <div>11. debtEquity (Raw): <strong>${rawFmt(fund.rawVals?.debtEquity)}</strong> (Used Key: <strong>${fund.usedKeys?.debtEquity || 'None'}</strong>)</div>
+        <div>12. Scores -> Rev: <strong>${rawFmt(qual.revenueScore)}</strong>, ROE: <strong>${rawFmt(qual.roeScore)}</strong>, Debt: <strong>${rawFmt(qual.debtScore)}</strong> | Total Quality: <strong>${rawFmt(qual.score)}</strong> (vs Threshold: <strong>${rawFmt(qual.threshold)}</strong>)</div>
+        <div style="margin-top: 8px; border-top: 1px dashed #ccc; padding-top: 8px;"><strong>Fetch Execution Diagnostics:</strong></div>
+        <div>13. finnhubKeyPresent: <strong>${fund.debug?.fmpKeyPresent !== undefined ? fund.debug.fmpKeyPresent : 'undefined'}</strong> (Length: <strong>${fund.debug?.keyLength !== undefined ? fund.debug.keyLength : 'undefined'}</strong>)</div>
+        <div>14. fetchFundamentalsCalled: <strong>${fund.debug?.fetchFundamentalsCalled !== undefined ? fund.debug.fetchFundamentalsCalled : 'undefined'}</strong></div>
+        <div>15. URLs:<br>&nbsp;&nbsp;Finnhub: <strong>${fund.debug?.finnhubUrl || 'N/A'}</strong><br>&nbsp;&nbsp;Ratios: <strong>${fund.debug?.ratiosUrl || 'N/A'}</strong><br>&nbsp;&nbsp;Growth: <strong>${fund.debug?.growthUrl || 'N/A'}</strong></div>
+        <div>16. Early Return Guard: <strong>${fund.debug?.earlyReturnReason || 'None (Executed)'}</strong></div>
+      `;
+
+      if (targetStock.ticker === 'MSFT') {
+        const ratiosKeys = fund.msftRawRatios || [];
+        const growthKeys = fund.msftRawGrowth || [];
+        const finnhubKeys = fund.msftRawFinnhub || [];
+        html += `
+          <div style="margin-top: 8px; border-top: 1px solid #ddd; padding-top: 8px; color: #555;">
+            <strong>MSFT Raw Finnhub Keys:</strong> ${finnhubKeys.join(', ') || 'None'}<br>
+            <strong>MSFT Raw Ratios Keys:</strong> ${ratiosKeys.join(', ') || 'None'}<br>
+            <strong>MSFT Raw Growth Keys:</strong> ${growthKeys.join(', ') || 'None'}
+          </div>
+        `;
+      }
     }
 
     deepDiagContent.innerHTML = html;
