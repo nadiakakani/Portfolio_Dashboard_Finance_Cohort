@@ -147,7 +147,7 @@ button:hover {
 }
 .diag-table th, .diag-table td {
   border: 1px solid var(--line);
-  padding: 0.4rem;
+  padding: 4px 6px;
   white-space: nowrap;
 }
 .diag-table tbody tr:nth-child(even) {
@@ -155,4 +155,81 @@ button:hover {
 }
 .diag-table tbody tr:hover {
   background: rgba(0,0,0,0.05);
+}
+
+/* Horizontal Table Scroll Container */
+.table-scroll-container {
+  overflow-x: auto;
+  max-width: 100%;
+  width: 100%;
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: white;
+  margin-top: 0.5rem;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Page horizontal overflow constraint */
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+/* Sticky First Column */
+.diag-table th:first-child,
+.diag-table td:first-child,
+.sticky-col {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  border-right: 2px solid var(--line) !important;
+}
+
+/* Header sticky z-index */
+.diag-table th:first-child,
+.diag-table th.sticky-col {
+  z-index: 3;
+  background-color: #f4f3ef;
+}
+
+/* Opaque backgrounds on sticky cells to prevent scroll bleed-through */
+.diag-table td:first-child,
+.diag-table td.sticky-col {
+  background-color: #ffffff;
+}
+
+.diag-table tbody tr:nth-child(even) td:first-child,
+.diag-table tbody tr:nth-child(even) td.sticky-col {
+  background-color: #f9f9f7;
+}
+
+.diag-table tbody tr.unqualified-row td:first-child,
+.diag-table tbody tr.unqualified-row td.sticky-col {
+  background-color: #f9f9f9;
+}
+
+.diag-table tbody tr.active-method-row td:first-child,
+.diag-table tbody tr.active-method-row td.sticky-col {
+  background-color: #e8f5e9;
+}
+
+.diag-table tfoot tr td:first-child,
+.diag-table tfoot tr td.sticky-col {
+  background-color: #f4f3ef;
+}
+
+/* Numeric cell padding & alignment */
+.diag-table th.num-cell,
+.diag-table td.num-cell {
+  text-align: right;
+  padding: 4px 6px;
+  font-family: 'Menlo', 'Courier New', monospace, sans-serif;
+}
+
+/* Responsive toggle weights columns below 900px */
+@media (max-width: 900px) {
+  #desired-positions-container:not(.show-all-weights) .toggle-weight-col {
+    display: none !important;
+  }
 }

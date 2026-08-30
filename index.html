@@ -194,6 +194,20 @@
       
       <div id="stocks-data-list" style="margin-top: 1rem;"></div>
     </section>
+
+    <!-- MODEL SIZING & WEIGHTING METHOD COMPARISON PANEL -->
+    <section class="panel" id="comparison-sizing-panel">
+      <h2>4. Model Sizing & Weighting Method Comparison (Model Wants)</h2>
+      <p class="field-hint">Sizes within-bucket allocations across qualifiers before execution caps/liquidity limits (Prompt 11).</p>
+      
+      <div id="method-comparison-container" style="margin-top: 1rem;">
+        <p class="placeholder">Run analysis to see weighting method comparison.</p>
+      </div>
+
+      <div id="desired-positions-container" style="margin-top: 1.5rem;">
+        <p class="placeholder">Run analysis to see desired positions (USD).</p>
+      </div>
+    </section>
     </div> <!-- END TAB DASHBOARD -->
 
     <!-- TAB CONTENT: DIAGNOSTICS -->
@@ -214,7 +228,7 @@
 
       <section class="panel" style="margin-top: 1.5rem;">
         <h2>Diagnostic Table</h2>
-        <div style="overflow-x: auto; margin-top: 1rem;">
+        <div class="table-scroll-container">
           <table id="diag-table" class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right; min-width: 1200px;">
             <thead>
               <tr style="background: var(--surface); border-bottom: 2px solid var(--ink);">
