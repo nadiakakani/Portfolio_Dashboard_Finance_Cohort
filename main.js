@@ -1526,7 +1526,7 @@ function computeRiskScoreAndFinal(portfolioState) {
         computeRiskScoreAndFinal(portfolioState);
 
         // --- SENTIMENT ---
-        const eligibleStocks = portfolioState.stocks.filter(s => s.status !== 'data-error' && s.status !== 'excluded-liquidity' && s.status !== 'excluded-quality');
+        const eligibleStocks = portfolioState.stocks.filter(s => s.status !== 'data-error');
         let sentimentCompleted = 0;
         
         for (const stock of eligibleStocks) {
@@ -1645,10 +1645,20 @@ function computeRiskScoreAndFinal(portfolioState) {
         // Final re-compute to include sentiment
         computeRiskScoreAndFinal(portfolioState);
 
+        // Compute Data Confidence (A6.13)
+        portfolioState.stocks.forEach(s => computeDataConfidence(s));
+
+        // Qualification pass (A6.4 & downtrend hard block)
+        qualifyStocks(portfolioState);
+
+        // Evaluate soft warnings (A6.14)
+        evaluateSoftWarnings(portfolioState);
+
         if (progressEl) {
           progressEl.textContent = 'Analysis price fetch and scoring complete! (21 / 21)';
         }
         renderStocksStatus();
+        renderQualificationSummary();
 
       } catch (e) {
         console.error("Analysis execution error:", e);
@@ -1767,17 +1777,401 @@ function computeRiskScoreAndFinal(portfolioState) {
     if (!available) {
         stock.quality.passed = true;
     } else if (score < threshold) {
-        if (stock.status === 'validated') {
-            stock.status = 'excluded-quality';
-            stock.bindingConstraint = 'quality gate';
-            portfolioState.hardBlocks.push({
-                ticker: stock.ticker,
-                reason: `Quality score ${score.toFixed(1)} below ${stock.bucket} threshold ${threshold}`
-            });
-        }
+        stock.quality.passed = false;
     } else {
         stock.quality.passed = true;
     }
+  }
+
+  // --- COMPUTE DATA CONFIDENCE (A6.13) ---
+  function computeDataConfidence(stock) {
+    if (stock.status === 'data-error') {
+      stock.dataConfidence = {
+        score: 0,
+        band: 'Insufficient',
+        deductions: [{ reason: 'Data error / fetch failed', points: 100 }]
+      };
+      return stock.dataConfidence;
+    }
+
+    let score = 100;
+    const deductions = [];
+
+    // 1. Fundamentals availability
+    if (!stock.fundamentals || stock.fundamentals.available === false || (stock.quality && !stock.quality.available)) {
+      score -= 20;
+      deductions.push({ reason: 'Fundamental data unavailable or incomplete', points: 20 });
+    }
+
+    // 2. Short price history
+    if (stock.barsAvailable < 252) {
+      score -= 15;
+      deductions.push({ reason: `Short price history (${stock.barsAvailable} bars < 252)`, points: 15 });
+    }
+
+    // 3. Sentiment data availability
+    if (!stock.sentimentData || !stock.sentimentData.available || stock.sentimentData.error) {
+      score -= 15;
+      deductions.push({ reason: 'Sentiment data unavailable or failed', points: 15 });
+    }
+
+    // 4. Source diversity
+    if (stock.news && stock.news.headlines && stock.news.headlines.length > 0 && stock.news.distinctSources < 2) {
+      score -= 10;
+      deductions.push({ reason: 'Single news source for sentiment', points: 10 });
+    }
+
+    // 5. Liquidity / volume history
+    if (stock.liquidity && (stock.liquidity.tier === 'Low' || stock.liquidity.tier === 'Illiquid')) {
+      score -= 10;
+      deductions.push({ reason: `Low liquidity tier (${stock.liquidity.tier})`, points: 10 });
+    }
+
+    const finalScore = Math.max(0, score);
+    let band = 'Insufficient';
+    if (finalScore >= CONFIG.confidenceBands.high) {
+      band = 'High';
+    } else if (finalScore >= CONFIG.confidenceBands.medium) {
+      band = 'Medium';
+    } else if (finalScore >= CONFIG.confidenceBands.low) {
+      band = 'Low';
+    } else {
+      band = 'Insufficient';
+    }
+
+    stock.dataConfidence = {
+      score: finalScore,
+      band: band,
+      deductions: deductions
+    };
+
+    return stock.dataConfidence;
+  }
+
+  // --- QUALIFICATION PASS (A6.4 & DOWNTREND HARD BLOCK) ---
+  function qualifyStocks(portfolioState) {
+    portfolioState.hardBlocks = [];
+    
+    for (const bKey of Object.keys(portfolioState.buckets)) {
+      portfolioState.buckets[bKey].qualifiers = [];
+    }
+
+    portfolioState.stocks.forEach(stock => {
+      if (stock.status === 'data-error') {
+        stock.bindingConstraint = 'data error';
+        portfolioState.hardBlocks.push({
+          ticker: stock.ticker,
+          bucket: stock.bucket,
+          status: 'data-error',
+          reason: stock.bindingConstraint,
+          detail: stock.errorReason || 'Price/indicator data fetch failed'
+        });
+        return;
+      }
+
+      const isDowntrend = CONFIG.excludeBelowBothMovingAverages && stock.technical && stock.technical.belowBothMAs;
+      const isIlliquid = stock.liquidity && stock.liquidity.tier === 'Illiquid';
+      const isQualityFailed = stock.quality && stock.quality.passed === false;
+      const isConfidenceInsufficient = stock.dataConfidence && stock.dataConfidence.band === 'Insufficient';
+      const isScoreBelowThreshold = stock.finalScore < CONFIG.qualificationThreshold;
+
+      if (isDowntrend) {
+        stock.status = 'excluded-downtrend';
+        stock.bindingConstraint = 'price below both moving averages';
+        portfolioState.hardBlocks.push({
+          ticker: stock.ticker,
+          bucket: stock.bucket,
+          status: stock.status,
+          reason: stock.bindingConstraint,
+          detail: `Price ($${stock.price?.toFixed(2)}) is below SMA50 ($${stock.indicators?.sma50?.toFixed(2)}) and SMA200 ($${stock.indicators?.sma200?.toFixed(2)})`
+        });
+      } else if (isIlliquid) {
+        stock.status = 'excluded-liquidity';
+        stock.bindingConstraint = 'illiquid tier';
+        portfolioState.hardBlocks.push({
+          ticker: stock.ticker,
+          bucket: stock.bucket,
+          status: stock.status,
+          reason: stock.bindingConstraint,
+          detail: `ADTV ($${stock.liquidity?.adtvUsd ? Math.round(stock.liquidity.adtvUsd).toLocaleString() : 'N/A'}) places stock in Illiquid tier`
+        });
+      } else if (isQualityFailed) {
+        stock.status = 'excluded-quality';
+        stock.bindingConstraint = 'quality gate';
+        portfolioState.hardBlocks.push({
+          ticker: stock.ticker,
+          bucket: stock.bucket,
+          status: stock.status,
+          reason: stock.bindingConstraint,
+          detail: `Quality score ${stock.quality?.score?.toFixed(1)} below ${stock.bucket} threshold ${stock.quality?.threshold}`
+        });
+      } else if (isConfidenceInsufficient) {
+        stock.status = 'excluded-confidence';
+        stock.bindingConstraint = 'insufficient data confidence';
+        portfolioState.hardBlocks.push({
+          ticker: stock.ticker,
+          bucket: stock.bucket,
+          status: stock.status,
+          reason: stock.bindingConstraint,
+          detail: `Data confidence score ${stock.dataConfidence?.score} is Insufficient`
+        });
+      } else if (isScoreBelowThreshold) {
+        stock.status = 'excluded-score';
+        stock.bindingConstraint = 'qualification threshold';
+        portfolioState.hardBlocks.push({
+          ticker: stock.ticker,
+          bucket: stock.bucket,
+          status: stock.status,
+          reason: stock.bindingConstraint,
+          detail: `Final score ${stock.finalScore?.toFixed(1)} below threshold ${CONFIG.qualificationThreshold}`
+        });
+      } else {
+        stock.status = 'qualified';
+        stock.bindingConstraint = 'none';
+        if (portfolioState.buckets[stock.bucket]) {
+          portfolioState.buckets[stock.bucket].qualifiers.push(stock);
+        }
+      }
+    });
+  }
+
+  // --- SOFT WARNINGS PASS (A6.14) ---
+  function evaluateSoftWarnings(portfolioState) {
+    portfolioState.warnings = [];
+
+    portfolioState.stocks.forEach(stock => {
+      stock.warnings = [];
+      if (stock.status === 'data-error') return;
+
+      const trendScore = stock.components?.trend || 50;
+      const momScore = stock.components?.momentum || 50;
+      const sentScore = stock.components?.sentiment || 50;
+      
+      // Technical / Sentiment Conflict
+      const isTechStrong = trendScore >= 60 && momScore >= 60;
+      const isSentWeak = sentScore < 45 || (stock.sentimentData && stock.sentimentData.rawScore < 0);
+      const isSentStrong = sentScore >= 65;
+      const isTechWeak = trendScore <= 40 || momScore <= 40;
+
+      if (isTechStrong && isSentWeak) {
+        const w = {
+          ticker: stock.ticker,
+          rule: 'Technical/Sentiment Conflict',
+          detail: `Strong technical trend (${trendScore.toFixed(1)}) & momentum (${momScore.toFixed(1)}), but negative/weak sentiment (${sentScore.toFixed(1)})`
+        };
+        stock.warnings.push(w);
+        portfolioState.warnings.push(w);
+      } else if (isTechWeak && isSentStrong) {
+        const w = {
+          ticker: stock.ticker,
+          rule: 'Technical/Sentiment Conflict',
+          detail: `Strong sentiment (${sentScore.toFixed(1)}), but weak technical trend (${trendScore.toFixed(1)})/momentum (${momScore.toFixed(1)})`
+        };
+        stock.warnings.push(w);
+        portfolioState.warnings.push(w);
+      }
+
+      // Borderline Quality
+      if (stock.quality && stock.quality.passed && stock.quality.available) {
+        const diff = stock.quality.score - stock.quality.threshold;
+        if (diff >= 0 && diff < 5) {
+          const w = {
+            ticker: stock.ticker,
+            rule: 'Borderline Quality',
+            detail: `Quality score ${stock.quality.score.toFixed(1)} is within 5 points of threshold ${stock.quality.threshold}`
+          };
+          stock.warnings.push(w);
+          portfolioState.warnings.push(w);
+        }
+      }
+
+      // High Volatility
+      if (stock.indicators?.annualisedVol && stock.indicators.annualisedVol > 0.40) {
+        const w = {
+          ticker: stock.ticker,
+          rule: 'High Volatility',
+          detail: `Annualised volatility ${(stock.indicators.annualisedVol * 100).toFixed(1)}% exceeds 40%`
+        };
+        stock.warnings.push(w);
+        portfolioState.warnings.push(w);
+      }
+
+      // High Drawdown
+      if (stock.indicators?.maxDrawdown && stock.indicators.maxDrawdown > 0.30) {
+        const w = {
+          ticker: stock.ticker,
+          rule: 'High Drawdown',
+          detail: `Max drawdown ${(stock.indicators.maxDrawdown * 100).toFixed(1)}% exceeds 30%`
+        };
+        stock.warnings.push(w);
+        portfolioState.warnings.push(w);
+      }
+
+      // Low Data Confidence Band
+      if (stock.dataConfidence && stock.dataConfidence.band === 'Low') {
+        const w = {
+          ticker: stock.ticker,
+          rule: 'Low Data Confidence',
+          detail: `Data confidence score (${stock.dataConfidence.score}) is in Low band`
+        };
+        stock.warnings.push(w);
+        portfolioState.warnings.push(w);
+      }
+
+      // Moderate or Low Liquidity
+      if (stock.liquidity && (stock.liquidity.tier === 'Moderate' || stock.liquidity.tier === 'Low')) {
+        const w = {
+          ticker: stock.ticker,
+          rule: 'Liquidity Restriction',
+          detail: `Liquidity tier is ${stock.liquidity.tier} (${stock.liquidity.participationCeiling * 100}% ceiling)`
+        };
+        stock.warnings.push(w);
+        portfolioState.warnings.push(w);
+      }
+
+      // Single News Source
+      if (stock.news && stock.news.headlines && stock.news.headlines.length > 0 && stock.news.distinctSources === 1) {
+        const w = {
+          ticker: stock.ticker,
+          rule: 'Single News Source',
+          detail: 'Sentiment score derived from headlines from a single news source'
+        };
+        stock.warnings.push(w);
+        portfolioState.warnings.push(w);
+      }
+    });
+  }
+
+  // --- QUALIFICATION SUMMARY (DIAGNOSTICS) ---
+  function renderQualificationSummary() {
+    const summaryContainer = document.getElementById('qualification-summary-content');
+    if (!summaryContainer) return;
+
+    if (!portfolioState.stocks || portfolioState.stocks.length === 0) {
+      summaryContainer.innerHTML = '<div>Run Analysis to see Qualification Summary.</div>';
+      return;
+    }
+
+    let html = '<div style="display: grid; gap: 0.4rem; font-family: monospace; font-size: 0.85rem;">';
+
+    // 1. One line per stock
+    portfolioState.stocks.forEach(s => {
+      const finalScoreStr = s.finalScore !== undefined ? s.finalScore.toFixed(1) : 'N/A';
+      
+      let qualityStr = 'N/A';
+      if (s.quality && s.quality.score !== undefined) {
+        const qPassed = s.quality.passed || s.quality.score >= s.quality.threshold;
+        const qPassText = qPassed ? '<span style="color: #2e7d32; font-weight: bold;">PASS</span>' : '<span style="color: #c62828; font-weight: bold;">FAIL</span>';
+        qualityStr = `${qPassText} (${s.quality.score.toFixed(1)}/${s.quality.threshold})`;
+      }
+
+      const confBand = s.dataConfidence ? `<strong>${s.dataConfidence.band}</strong> (${s.dataConfidence.score})` : 'N/A';
+      const downtrendStr = s.technical && s.technical.belowBothMAs ? '<span style="color: #d97706; font-weight: bold;">YES</span>' : 'NO';
+      
+      const isQualified = s.status === 'qualified';
+      const statusBadge = isQualified 
+        ? `<span style="color: #2e7d32; font-weight: bold;">qualified</span>` 
+        : `<span style="color: #c62828; font-weight: bold;">${s.status}</span> (Binding: ${s.bindingConstraint || 'N/A'})`;
+
+      html += `
+        <div style="padding: 0.35rem 0.6rem; background: ${isQualified ? '#f1f8e9' : '#fff5f5'}; border: 1px solid ${isQualified ? '#c8e6c9' : '#ffcdd2'}; border-radius: 4px;">
+          <strong>${s.ticker}</strong> <span style="color: #666;">(${s.bucket})</span> &mdash; 
+          Final Score: <strong>${finalScoreStr}</strong> | 
+          Quality: ${qualityStr} | 
+          Data Confidence: ${confBand} | 
+          Downtrend: ${downtrendStr} | 
+          Status: ${statusBadge}
+        </div>
+      `;
+    });
+
+    // 2. Survivor count per bucket
+    const bucketCounts = {};
+    for (const bKey of Object.keys(CONFIG.universe)) {
+      bucketCounts[bKey] = {
+        label: CONFIG.universe[bKey].label,
+        total: 0,
+        qualified: 0
+      };
+    }
+
+    let totalQualified = 0;
+    portfolioState.stocks.forEach(s => {
+      if (bucketCounts[s.bucket]) {
+        bucketCounts[s.bucket].total++;
+        if (s.status === 'qualified') {
+          bucketCounts[s.bucket].qualified++;
+          totalQualified++;
+        }
+      }
+    });
+
+    html += `
+      <div style="margin-top: 1.2rem; border-top: 2px solid var(--line); padding-top: 0.8rem;">
+        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.95rem; text-transform: uppercase; color: var(--ink);">Survivor Count per Bucket</h3>
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.5rem;">
+    `;
+
+    for (const bKey of Object.keys(bucketCounts)) {
+      const b = bucketCounts[bKey];
+      html += `
+        <div style="background: var(--surface); padding: 0.5rem; border: 1px solid var(--line); border-radius: 4px;">
+          <div style="font-weight: bold;">${b.label}</div>
+          <div>Qualified: <strong style="color: #2e7d32;">${b.qualified} / ${b.total}</strong> stocks</div>
+        </div>
+      `;
+    }
+
+    html += `
+        </div>
+        <div style="margin-top: 0.6rem; font-weight: bold; color: var(--accent); font-size: 0.95rem;">
+          Total Qualified Universe: ${totalQualified} / ${portfolioState.stocks.length} stocks
+        </div>
+      </div>
+    `;
+
+    // 3. Count of each exclusion reason
+    const exclusionCounts = {};
+    portfolioState.stocks.forEach(s => {
+      if (s.status !== 'qualified') {
+        const reason = s.bindingConstraint || s.status || 'unknown';
+        exclusionCounts[reason] = (exclusionCounts[reason] || 0) + 1;
+      }
+    });
+
+    html += `
+      <div style="margin-top: 1.2rem; border-top: 2px solid var(--line); padding-top: 0.8rem;">
+        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.95rem; text-transform: uppercase; color: var(--ink);">Exclusion Reasons Breakdown</h3>
+    `;
+
+    const reasonKeys = Object.keys(exclusionCounts);
+    if (reasonKeys.length === 0) {
+      html += `<div>No stocks were excluded. All stocks passed qualification.</div>`;
+    } else {
+      html += `<ul style="margin: 0; padding-left: 1.25rem;">`;
+      reasonKeys.forEach(r => {
+        html += `<li style="margin-bottom: 0.2rem;"><strong>${r}:</strong> ${exclusionCounts[r]} stock(s)</li>`;
+      });
+      html += `</ul>`;
+    }
+
+    html += `</div>`;
+
+    // 4. Soft Warnings Summary
+    if (portfolioState.warnings && portfolioState.warnings.length > 0) {
+      html += `
+        <div style="margin-top: 1.2rem; border-top: 2px solid var(--line); padding-top: 0.8rem;">
+          <h3 style="margin: 0 0 0.5rem 0; font-size: 0.95rem; text-transform: uppercase; color: #d97706;">Active Soft Warnings (${portfolioState.warnings.length})</h3>
+          <ul style="margin: 0; padding-left: 1.25rem; font-size: 0.8rem; color: #333;">
+      `;
+      portfolioState.warnings.forEach(w => {
+        html += `<li style="margin-bottom: 0.25rem;"><strong>${w.ticker}</strong> [${w.rule}]: ${w.detail}</li>`;
+      });
+      html += `</ul></div>`;
+    }
+
+    html += `</div>`;
+    summaryContainer.innerHTML = html;
   }
 
   // --- TABS LOGIC ---
@@ -1868,6 +2262,7 @@ function computeRiskScoreAndFinal(portfolioState) {
   }
 
   function renderDiagnosticsTable() {
+    renderQualificationSummary();
     renderQualitySummary();
     if (!diagTableBody) return;
     let html = '';
