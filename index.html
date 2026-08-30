@@ -160,6 +160,17 @@
             </div>
           </div>
 
+          <div class="field-group">
+            <label for="openrouter-model-select">OpenRouter LLM Model (Structured Outputs Supported)</label>
+            <div id="openrouter-model-container">
+              <select id="openrouter-model-select" style="width: 100%; padding: 0.4rem; border: 1px solid var(--line); border-radius: 4px; font-family: monospace; font-size: 0.85rem;">
+                <option value="">Loading OpenRouter models...</option>
+              </select>
+              <input id="openrouter-model-input" type="text" placeholder="e.g. google/gemini-2.0-flash-001" style="display: none; width: 100%; padding: 0.4rem; border: 1px solid var(--line); border-radius: 4px; font-family: monospace; font-size: 0.85rem;" />
+            </div>
+            <p id="openrouter-model-status" class="field-hint" style="margin-top: 0.25rem; font-size: 0.8rem; color: #555;"></p>
+          </div>
+
           <button type="button" id="clear-keys-btn" style="background: var(--error); margin-top: 0.5rem;">Clear Saved Keys</button>
         </div>
       </details>
