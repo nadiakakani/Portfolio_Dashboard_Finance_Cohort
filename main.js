@@ -352,7 +352,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Mandate form inputs live listeners
-  const mandateInputs = ['total-investment', 'base-currency', 'cash-reserve', 'commission-pct', 'tax-pct', 'max-execution-days', 'fractional-shares'];
+  const mandateInputs = ['total-investment', 'base-currency', 'cash-reserve', 'commission-pct', 'tax-pct', 'max-execution-days', 'rebalance-tolerance', 'fractional-shares'];
   mandateInputs.forEach(id => {
     const el = document.getElementById(id);
     if (el) {
@@ -2785,48 +2785,126 @@ function computeRiskScoreAndFinal(portfolioState) {
       }
     }
 
-    // 4. Calculate Incremental Orders & Cost Estimation (A6.8, A6.9)
+    // 4. Calculate Target Shares, Trade Proposals & Side Assignment (A6.8, A6.12)
     let totalEstimatedCost = 0;
+    let grossPurchases = 0;
+    let grossSales = 0;
+    let unspentResidualCashTotal = 0;
+
+    const tolPct = (portfolioState.inputs.rebalanceTolerancePct !== undefined 
+      ? portfolioState.inputs.rebalanceTolerancePct 
+      : (CONFIG.rebalanceTolerancePct || 0.005));
+    const toleranceThresholdUsd = targetVal * tolPct;
 
     portfolioState.stocks.forEach(s => {
-      if (s.executablePositionUsd > 0 || (s.existingShares && s.existingShares > 0)) {
-        const price = s.price || 1;
-        const targetShares = portfolioState.inputs.fractionalShares 
-          ? (s.executablePositionUsd / price) 
-          : Math.floor(s.executablePositionUsd / price);
+      const price = s.price || 0;
 
-        s.targetShares = targetShares;
-        s.existingShares = s.existingShares || 0;
-        s.existingValueUsd = s.existingShares * price;
+      // Match existing holdings input
+      const holdingObj = (portfolioState.inputs.existingHoldings || []).find(h => h.ticker.toUpperCase() === s.ticker.toUpperCase());
+      const existingShares = holdingObj ? Number(holdingObj.shares || 0) : 0;
+      s.existingShares = existingShares;
+      s.existingValueUsd = existingShares * price;
 
-        s.incrementalShares = targetShares - s.existingShares;
-        s.incrementalNotionalUsd = s.incrementalShares * price;
-        s.orderNotionalUsd = Math.abs(s.incrementalNotionalUsd);
-
-        if (s.incrementalShares > 0.0001) s.orderType = 'buy';
-        else if (s.incrementalShares < -0.0001) s.orderType = 'sell';
-        else s.orderType = 'hold';
-
-        const vDaily = (s.indicators?.medianDailyVolume || 0) * price;
-        s.orderPctOfAdv = vDaily > 0 ? (s.orderNotionalUsd / vDaily) : 0;
-
-        const partCeiling = s.liquidity?.participationCeiling || 0.03;
-        const maxDailyNotional = vDaily * partCeiling;
-        s.requiredExecutionDays = maxDailyNotional > 0 ? Math.ceil(s.orderNotionalUsd / maxDailyNotional) : 0;
-
-        // Estimate cost per A6.9
-        s.cost = estimateCost(s, s.orderNotionalUsd);
-        totalEstimatedCost += s.cost.totalCostUsd;
-      } else {
+      if (!s.price || s.price <= 0) {
         s.targetShares = 0;
-        s.existingShares = s.existingShares || 0;
-        s.existingValueUsd = s.existingShares * (s.price || 1);
-        s.incrementalShares = 0;
+        s.tradeQuantity = 0;
         s.orderNotionalUsd = 0;
-        s.orderType = 'none';
+        s.residualCash = 0;
+        s.side = 'INSUFFICIENT DATA';
+        s.orderType = 'insufficient data';
         s.orderPctOfAdv = 0;
         s.requiredExecutionDays = 0;
         s.cost = estimateCost(s, 0);
+        return;
+      }
+
+      // 1) Target Shares calculation (per A6.12)
+      let targetShares = 0;
+      let residualCash = 0;
+
+      if (s.executablePositionUsd > 0) {
+        if (portfolioState.inputs.fractionalShares) {
+          targetShares = s.executablePositionUsd / price;
+          residualCash = 0;
+        } else {
+          targetShares = Math.floor(s.executablePositionUsd / price);
+          residualCash = Math.max(0, s.executablePositionUsd - (targetShares * price));
+        }
+      } else {
+        targetShares = 0;
+        residualCash = 0;
+      }
+
+      s.targetShares = targetShares;
+      s.residualCash = residualCash;
+      unspentResidualCashTotal += residualCash;
+
+      // 2) Trade Quantity = Target Shares - Current Shares
+      const rawTradeQuantity = targetShares - existingShares;
+      const tradeNotional = Math.abs(rawTradeQuantity * price);
+
+      s.incrementalShares = rawTradeQuantity;
+      s.incrementalNotionalUsd = rawTradeQuantity * price;
+
+      // 3) Side Assignment: BUY, SELL, HOLD, BLOCKED, MANUAL REVIEW, INSUFFICIENT DATA
+      let side = 'HOLD';
+      const tier = s.liquidity?.tier || "Liquid";
+      const isIlliquidTier = (s.status === 'excluded-liquidity' || tier === 'Illiquid' || s.liquidity?.treatment === 'reject');
+
+      if (isIlliquidTier) {
+        if (tradeNotional >= toleranceThresholdUsd) {
+          side = 'BLOCKED';
+        } else {
+          side = 'HOLD';
+        }
+      } else if (tradeNotional < toleranceThresholdUsd || Math.abs(rawTradeQuantity) < 1e-6) {
+        // Immaterial trades within CONFIG.rebalanceTolerancePct become HOLD
+        side = 'HOLD';
+      } else {
+        // Material trade >= toleranceThresholdUsd
+        if (tier === "Moderate" || tier === "Low") {
+          // Moderate or Low liquidity tier gets MANUAL REVIEW rather than a silent BUY/SELL
+          side = 'MANUAL REVIEW';
+        } else {
+          if (rawTradeQuantity > 0) {
+            side = 'BUY';
+          } else if (rawTradeQuantity < 0) {
+            side = 'SELL';
+          }
+        }
+      }
+
+      s.side = side;
+
+      if (side === 'HOLD' || side === 'BLOCKED' || side === 'INSUFFICIENT DATA') {
+        s.tradeQuantity = 0;
+        s.orderNotionalUsd = 0;
+        s.orderType = side.toLowerCase();
+      } else {
+        s.tradeQuantity = rawTradeQuantity;
+        s.orderNotionalUsd = tradeNotional;
+        s.orderType = side.toLowerCase();
+      }
+
+      // Order metrics (% ADV & Execution Days)
+      const vDaily = (s.indicators?.medianDailyVolume || 0) * price;
+      s.orderPctOfAdv = vDaily > 0 ? (s.orderNotionalUsd / vDaily) : 0;
+
+      const partCeiling = s.liquidity?.participationCeiling || 0.03;
+      const maxDailyNotional = vDaily * partCeiling;
+      s.requiredExecutionDays = (maxDailyNotional > 0 && s.orderNotionalUsd > 0)
+        ? Math.ceil(s.orderNotionalUsd / maxDailyNotional)
+        : 0;
+
+      // Estimate transaction cost per A6.9
+      s.cost = estimateCost(s, s.orderNotionalUsd);
+      totalEstimatedCost += s.cost.totalCostUsd;
+
+      // Aggregate gross purchases & sales
+      if (side === 'BUY' || (side === 'MANUAL REVIEW' && rawTradeQuantity > 0)) {
+        grossPurchases += s.orderNotionalUsd;
+      } else if (side === 'SELL' || (side === 'MANUAL REVIEW' && rawTradeQuantity < 0)) {
+        grossSales += s.orderNotionalUsd;
       }
     });
 
@@ -2849,22 +2927,37 @@ function computeRiskScoreAndFinal(portfolioState) {
       totalDeployed += bState.deployed;
     }
 
-    // 6. Provisional Fee Reserve Reconciliation (A6.12)
+    // 6. Provisional Fee Reserve & Cash Requirements Reconciliation (A6.12)
     const provisionalReserve = portfolioState.capital.provisionalFeeReserve || 0;
     const feeReserveVariance = provisionalReserve - totalEstimatedCost;
 
     portfolioState.capital.estimatedActualCost = totalEstimatedCost;
     portfolioState.capital.feeReserveVariance = feeReserveVariance;
     portfolioState.capital.deployed = totalDeployed;
+    portfolioState.capital.grossPurchases = grossPurchases;
+    portfolioState.capital.grossSales = grossSales;
+    portfolioState.capital.unspentResidualCashTotal = unspentResidualCashTotal;
 
     const baseUndeployed = Math.max(0, targetVal - totalDeployed);
-    portfolioState.capital.undeployed = baseUndeployed + (feeReserveVariance > 0 ? feeReserveVariance : 0);
+    portfolioState.capital.undeployed = baseUndeployed + (feeReserveVariance > 0 ? feeReserveVariance : 0) + unspentResidualCashTotal;
+
+    // Settled Cash Calculation & Verification
+    const existingPortfolioVal = portfolioState.capital.existingValue || 0;
+    const settledCashBeforeRebalance = Math.max(0, targetVal - existingPortfolioVal);
+    const availableCashForPurchases = settledCashBeforeRebalance + grossSales - totalEstimatedCost;
+    const netCashRequirement = grossPurchases - grossSales + totalEstimatedCost;
+    const cashConstraintSatisfied = grossPurchases <= (availableCashForPurchases + 0.01);
+
+    portfolioState.capital.settledCashBeforeRebalance = settledCashBeforeRebalance;
+    portfolioState.capital.availableCashForPurchases = availableCashForPurchases;
+    portfolioState.capital.netCashRequirement = netCashRequirement;
+    portfolioState.capital.cashConstraintSatisfied = cashConstraintSatisfied;
 
     // 7. Assert Invariants (A10)
     assertInvariantsA10(portfolioState);
   }
 
-  // --- PROMPT 11: RENDER EXECUTABLE PORTFOLIO UI ---
+  // --- PROMPT 11/12: RENDER EXECUTABLE PORTFOLIO & TRADE PROPOSALS UI ---
   function renderExecutablePortfolio() {
     const bannerContainer = document.getElementById('invariant-banner-container');
     const summaryContainer = document.getElementById('executable-summary-container');
@@ -2909,6 +3002,11 @@ function computeRiskScoreAndFinal(portfolioState) {
     const estimatedCost = portfolioState.capital.estimatedActualCost || 0;
     const feeVariance = portfolioState.capital.feeReserveVariance || 0;
     const provReserve = portfolioState.capital.provisionalFeeReserve || 0;
+    const grossPurchases = portfolioState.capital.grossPurchases || 0;
+    const grossSales = portfolioState.capital.grossSales || 0;
+    const netCashReq = portfolioState.capital.netCashRequirement || 0;
+    const availableCash = portfolioState.capital.availableCashForPurchases || 0;
+    const isCashOk = portfolioState.capital.cashConstraintSatisfied !== false;
 
     const deployedPct = targetVal > 0 ? (deployed / targetVal) * 100 : 0;
     const undeployedPct = targetVal > 0 ? (undeployed / targetVal) * 100 : 0;
@@ -2921,8 +3019,8 @@ function computeRiskScoreAndFinal(portfolioState) {
 
     summaryContainer.innerHTML = `
       <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1rem; font-size: 0.9rem;">
-        <h3 style="margin-top: 0; font-size: 1rem; color: var(--ink);">Capital Reconciliation & Cost Summary</h3>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: 0.75rem;">
+        <h3 style="margin-top: 0; font-size: 1rem; color: var(--ink);">Capital Reconciliation & Trade Cash Requirements Summary</h3>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 0.75rem;">
           <div style="background: #f4f3ef; padding: 0.75rem; border-radius: 4px; border: 1px solid var(--line);">
             <div style="color: #666; font-size: 0.8rem;">Target Portfolio Value</div>
             <div style="font-size: 1.1rem; font-weight: bold; font-family: monospace;">${formatCurrency(targetVal, currency)}</div>
@@ -2944,6 +3042,29 @@ function computeRiskScoreAndFinal(portfolioState) {
             </div>
           </div>
         </div>
+
+        <div style="margin-top: 1rem; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 4px; padding: 0.75rem;">
+          <div style="font-weight: bold; font-size: 0.85rem; color: #333; margin-bottom: 0.4rem;">Trade Execution Proposals & Cash Waterfall</div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.75rem; font-family: monospace; font-size: 0.85rem;">
+            <div>Gross Purchases: <strong style="color: #2e7d32;">+${formatCurrency(grossPurchases, currency)}</strong></div>
+            <div>Gross Sales: <strong style="color: #c62828;">-${formatCurrency(grossSales, currency)}</strong></div>
+            <div>Est. Costs: <strong style="color: #d97706;">${formatCurrency(estimatedCost, currency)}</strong></div>
+            <div>Net Cash Required: <strong>${formatCurrency(netCashReq, currency)}</strong></div>
+            <div>Available Settled Cash: <strong>${formatCurrency(availableCash, currency)}</strong></div>
+          </div>
+          <div style="margin-top: 0.5rem;">
+            ${isCashOk ? `
+              <span style="background: #e8f5e9; color: #2e7d32; padding: 0.2rem 0.5rem; border-radius: 3px; font-weight: bold; font-size: 0.8rem; border: 1px solid #c8e6c9; display: inline-block;">
+                ✓ CASH SUFFICIENCY VERIFIED: Purchases (${formatCurrency(grossPurchases, currency)}) do not exceed available settled cash (${formatCurrency(availableCash, currency)}).
+              </span>
+            ` : `
+              <div style="background: #ffebee; border: 1px solid var(--error); color: var(--error); padding: 0.4rem 0.6rem; border-radius: 3px; font-weight: bold; font-size: 0.8rem;">
+                ⚠️ CASH CONSTRAINT VIOLATION: Gross purchases (${formatCurrency(grossPurchases, currency)}) exceed available settled cash (${formatCurrency(availableCash, currency)}).
+              </div>
+            `}
+          </div>
+        </div>
+
         ${isShortfall ? `
           <div style="background: #ffebee; border: 1px solid var(--error); color: var(--error); padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.85rem; margin-top: 0.75rem; font-weight: bold; display: flex; align-items: center; gap: 0.5rem;">
             <span>⚠️ FEE RESERVE SHORTFALL WARNING:</span> Estimated transaction costs (${formatCurrency(estimatedCost, currency)}) exceed provisional fee reserve (${formatCurrency(provReserve, currency)}) by ${formatCurrency(Math.abs(feeVariance), currency)}.
@@ -2952,13 +3073,13 @@ function computeRiskScoreAndFinal(portfolioState) {
       </div>
     `;
 
-    // 3. Executable Positions Table
+    // 3. Executable Positions & Trade Proposals Table
     let posHtml = `
       <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
-          <h3 style="margin: 0; font-size: 1rem; color: var(--ink);">Executable Positions & Incremental Order Execution</h3>
+          <h3 style="margin: 0; font-size: 1rem; color: var(--ink);">Executable Positions & Trade Proposals</h3>
           <span style="font-size: 0.8rem; background: #fff3e0; color: #e65100; padding: 0.2rem 0.5rem; border-radius: 3px; font-weight: bold; border: 1px solid #ffe0b2;">
-            ⚠️ Market Impact Uncalibrated (Y=1.0)
+            ⚠️ Proposals Only &mdash; Market Impact Uncalibrated (Y=1.0)
           </span>
         </div>
 
@@ -2969,15 +3090,14 @@ function computeRiskScoreAndFinal(portfolioState) {
                 <th class="sticky-col" style="text-align: left; padding: 6px;">Ticker</th>
                 <th style="text-align: left; padding: 6px;">Bucket</th>
                 <th style="text-align: left; padding: 6px;">Status</th>
+                <th style="text-align: left; padding: 6px;">Liquidity Tier</th>
                 <th class="num-cell" style="padding: 6px;">Existing Holding</th>
-                <th class="num-cell" style="padding: 6px;">Desired Pos ($)</th>
-                <th class="num-cell" style="padding: 6px; background: #e8f5e9; font-weight: bold;">Executable Pos ($)</th>
-                <th class="num-cell" style="padding: 6px; background: #e8f5e9; font-weight: bold;">Exec Weight</th>
-                <th class="num-cell" style="padding: 6px;">Incremental Order</th>
-                <th style="text-align: center; padding: 6px;">Order Type</th>
+                <th class="num-cell" style="padding: 6px; background: #e8f5e9; font-weight: bold;">Target Pos ($ & sh)</th>
+                <th class="num-cell" style="padding: 6px;">Trade Proposal</th>
+                <th style="text-align: center; padding: 6px;">Proposal Side</th>
                 <th class="num-cell" style="padding: 6px;">Order % ADV</th>
                 <th class="num-cell" style="padding: 6px;">Exec Days</th>
-                <th class="num-cell" style="padding: 6px;">Est. Cost & Component Breakdown</th>
+                <th class="num-cell" style="padding: 6px;">Est. Cost & Breakdown</th>
                 <th style="text-align: left; padding: 6px;">Binding Constraint</th>
               </tr>
             </thead>
@@ -2987,27 +3107,57 @@ function computeRiskScoreAndFinal(portfolioState) {
     portfolioState.stocks.forEach(s => {
       const isQ = s.status === 'qualified';
       const isExec = (s.executablePositionUsd || 0) > 0;
+      const tierName = s.liquidity?.tier || "Liquid";
 
       const existingShares = s.existingShares || 0;
       const existingVal = s.existingValueUsd || 0;
-      const existingStr = existingShares > 0 ? `${existingShares} sh (${formatCurrency(existingVal, currency)})` : '&mdash;';
+      const existingStr = existingShares > 0 ? `${existingShares.toLocaleString()} sh (${formatCurrency(existingVal, currency)})` : '&mdash;';
 
-      const desiredUsdStr = isQ ? formatCurrency(s.desiredPositionUsd, currency) : '$0.00';
-      const execUsdStr = formatCurrency(s.executablePositionUsd, currency);
-      const execWtStr = targetVal > 0 ? `${((s.executablePositionUsd / targetVal) * 100).toFixed(1)}%` : '0.0%';
+      const targetShFormatted = portfolioState.inputs.fractionalShares 
+        ? (s.targetShares || 0).toFixed(2) 
+        : Math.round(s.targetShares || 0).toString();
+      const targetPosStr = `${targetShFormatted} sh (${formatCurrency(s.executablePositionUsd, currency)})`;
 
-      const incShares = s.incrementalShares || 0;
-      const incNotional = s.orderNotionalUsd || 0;
-      const incSharesFormatted = portfolioState.inputs.fractionalShares ? incShares.toFixed(2) : Math.round(incShares).toString();
-      const incOrderStr = (incNotional > 0) ? `${incSharesFormatted} sh (${formatCurrency(incNotional, currency)})` : '&mdash;';
+      // Trade Proposal display
+      const tradeQty = s.tradeQuantity || s.incrementalShares || 0;
+      const tradeNotional = s.orderNotionalUsd || 0;
+      const tradeQtyFormatted = portfolioState.inputs.fractionalShares ? Math.abs(tradeQty).toFixed(2) : Math.round(Math.abs(tradeQty)).toString();
+      const tradeSign = tradeQty > 0 ? '+' : tradeQty < 0 ? '-' : '';
 
-      let orderTypeBadge = '&mdash;';
-      if (s.orderType === 'buy') {
-        orderTypeBadge = `<span style="background: #e8f5e9; color: #2e7d32; padding: 0.1rem 0.4rem; border-radius: 3px; font-weight: bold;">BUY</span>`;
-      } else if (s.orderType === 'sell') {
-        orderTypeBadge = `<span style="background: #ffebee; color: #c62828; padding: 0.1rem 0.4rem; border-radius: 3px; font-weight: bold;">SELL</span>`;
-      } else if (s.orderType === 'hold' && existingShares > 0) {
-        orderTypeBadge = `<span style="background: #e0e0e0; color: #424242; padding: 0.1rem 0.4rem; border-radius: 3px; font-weight: bold;">HOLD</span>`;
+      let tradePropStr = '&mdash;';
+      if (s.side === 'BUY' || s.side === 'SELL' || (s.side === 'MANUAL REVIEW' && tradeNotional > 0)) {
+        tradePropStr = `${tradeSign}${tradeQtyFormatted} sh (${formatCurrency(tradeNotional, currency)})`;
+      } else if (s.side === 'HOLD') {
+        tradePropStr = tradeQty !== 0 ? `<span style="color: #666;">Hold (${tradeSign}${tradeQtyFormatted} sh < tol)</span>` : '&mdash;';
+      } else if (s.side === 'BLOCKED') {
+        tradePropStr = `<span style="color: #4e342e;">Blocked (${tierName})</span>`;
+      } else if (s.side === 'INSUFFICIENT DATA') {
+        tradePropStr = `<span style="color: #666;">No Price</span>`;
+      }
+
+      // Proposal Side Badge
+      let sideBadge = '&mdash;';
+      switch (s.side) {
+        case 'BUY':
+          sideBadge = `<span style="background: #e8f5e9; color: #2e7d32; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: bold; border: 1px solid #c8e6c9;">BUY</span>`;
+          break;
+        case 'SELL':
+          sideBadge = `<span style="background: #ffebee; color: #c62828; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: bold; border: 1px solid #ffcdd2;">SELL</span>`;
+          break;
+        case 'HOLD':
+          sideBadge = `<span style="background: #f5f5f5; color: #616161; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: bold; border: 1px solid #e0e0e0;">HOLD</span>`;
+          break;
+        case 'MANUAL REVIEW':
+          sideBadge = `<span style="background: #fff3e0; color: #ef6c00; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: bold; border: 1px solid #ffe0b2;">MANUAL REVIEW</span>`;
+          break;
+        case 'BLOCKED':
+          sideBadge = `<span style="background: #efebe9; color: #4e342e; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: bold; border: 1px solid #d7ccc8;">BLOCKED</span>`;
+          break;
+        case 'INSUFFICIENT DATA':
+          sideBadge = `<span style="background: #eceff1; color: #37474f; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: bold; border: 1px solid #cfd8dc;">INSUFFICIENT DATA</span>`;
+          break;
+        default:
+          sideBadge = `<span style="background: #f5f5f5; color: #616161; padding: 0.15rem 0.5rem; border-radius: 4px;">${s.side || 'HOLD'}</span>`;
       }
 
       const orderAdvPct = (s.orderPctOfAdv || 0) * 100;
@@ -3027,9 +3177,6 @@ function computeRiskScoreAndFinal(portfolioState) {
             Comm: ${(costObj.commissionPct || 0).toFixed(2)}% | Tax: ${(costObj.taxPct || 0).toFixed(2)}%<br>
             Spread: ${(costObj.spreadPct || 0).toFixed(2)}% | Impact: ${(costObj.impactPct || 0).toFixed(4)}%
           </div>
-          <div style="font-size: 0.65rem; color: #666; margin-top: 0.1rem;">
-            Daily Vol: ${(costObj.dailyVolUsed || 0).toFixed(4)} (decimal) / ${((costObj.dailyVolUsed || 0) * 100).toFixed(2)}%
-          </div>
         `;
       }
 
@@ -3040,12 +3187,11 @@ function computeRiskScoreAndFinal(portfolioState) {
           <td class="sticky-col" style="text-align: left; padding: 6px;"><strong>${s.ticker}</strong></td>
           <td style="text-align: left; padding: 6px;">${s.bucket}</td>
           <td style="text-align: left; padding: 6px;">${isQ ? '<span style="color: #2e7d32; font-weight: bold;">qualified</span>' : `<span style="color: #c62828;">${s.status}</span>`}</td>
+          <td style="text-align: left; padding: 6px; font-weight: 500;">${tierName}</td>
           <td class="num-cell" style="padding: 6px;">${existingStr}</td>
-          <td class="num-cell" style="padding: 6px;">${desiredUsdStr}</td>
-          <td class="num-cell" style="padding: 6px; background: #f1f8e9; font-weight: bold; color: #2e7d32;">${execUsdStr}</td>
-          <td class="num-cell" style="padding: 6px; background: #f1f8e9; font-weight: bold;">${execWtStr}</td>
-          <td class="num-cell" style="padding: 6px;">${incOrderStr}</td>
-          <td style="text-align: center; padding: 6px;">${orderTypeBadge}</td>
+          <td class="num-cell" style="padding: 6px; background: #f1f8e9; font-weight: bold; color: #2e7d32;">${targetPosStr}</td>
+          <td class="num-cell" style="padding: 6px;">${tradePropStr}</td>
+          <td style="text-align: center; padding: 6px;">${sideBadge}</td>
           <td class="num-cell" style="padding: 6px;">${orderAdvStr}</td>
           <td class="num-cell" style="padding: 6px;">${reqDaysStr}</td>
           <td class="num-cell" style="padding: 6px; text-align: right;" title="Breakdown: Commission %, Tax %, Half-Spread %, Market Impact %">${costCellHtml}</td>
@@ -3060,8 +3206,7 @@ function computeRiskScoreAndFinal(portfolioState) {
             <tr style="background: #f4f3ef; font-weight: bold; border-top: 2px solid var(--line);">
               <td class="sticky-col" style="background: #f4f3ef;">Portfolio Totals</td>
               <td colspan="4" class="num-cell" style="padding: 6px;">Total Executed Portfolio:</td>
-              <td class="num-cell" style="padding: 6px; color: #2e7d32; font-size: 0.9rem;">${formatCurrency(deployed, currency)}</td>
-              <td class="num-cell" style="padding: 6px;">${deployedPct.toFixed(1)}%</td>
+              <td class="num-cell" style="padding: 6px; color: #2e7d32; font-size: 0.9rem;">${formatCurrency(deployed, currency)} (${deployedPct.toFixed(1)}%)</td>
               <td colspan="4" class="num-cell" style="padding: 6px;">Total Estimated Transaction Cost:</td>
               <td class="num-cell" style="padding: 6px;">${formatCurrency(estimatedCost, currency)}</td>
               <td></td>
