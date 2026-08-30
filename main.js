@@ -166,8 +166,8 @@ function calculateCapital() {
   const totalInvestment = Number(document.getElementById('total-investment')?.value || 500000);
   const baseCurrency = document.getElementById('base-currency')?.value || "USD";
   const cashReservePct = Number(document.getElementById('cash-reserve')?.value || 5) / 100;
-  const commissionPct = Number(document.getElementById('commission-pct')?.value || 0.1) / 100;
-  const taxPct = Number(document.getElementById('tax-pct')?.value || 0.5) / 100;
+  const commissionPct = Number(document.getElementById('commission-pct')?.value ?? 0.1) / 100;
+  const taxPct = Number(document.getElementById('tax-pct')?.value ?? 0) / 100;
 
   const feesPct = commissionPct + taxPct;
   const provisionalReserve = feesPct * totalInvestment;
@@ -302,7 +302,9 @@ function updateDashboardState() {
   if (portfolioState.stocks && portfolioState.stocks.length > 0) {
     computeWithinBucketWeights(portfolioState);
     computePortfolioComparison(portfolioState);
+    runExecutablePositionSizingPipeline(portfolioState);
     renderMethodComparisonAndSizing();
+    renderExecutablePortfolio();
   }
 }
 
@@ -350,7 +352,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Mandate form inputs live listeners
-  const mandateInputs = ['total-investment', 'base-currency', 'cash-reserve', 'commission-pct', 'tax-pct'];
+  const mandateInputs = ['total-investment', 'base-currency', 'cash-reserve', 'commission-pct', 'tax-pct', 'max-execution-days', 'fractional-shares'];
   mandateInputs.forEach(id => {
     const el = document.getElementById(id);
     if (el) {
@@ -1678,12 +1680,16 @@ function computeRiskScoreAndFinal(portfolioState) {
         computeWithinBucketWeights(portfolioState);
         computePortfolioComparison(portfolioState);
 
+        // Run executable position sizing pipeline (A6.8 - A6.12, A10 / Prompt 11)
+        runExecutablePositionSizingPipeline(portfolioState);
+
         if (progressEl) {
           progressEl.textContent = 'Analysis price fetch and scoring complete! (21 / 21)';
         }
         renderStocksStatus();
         renderQualificationSummary();
         renderMethodComparisonAndSizing();
+        renderExecutablePortfolio();
 
       } catch (e) {
         console.error("Analysis execution error:", e);
@@ -2446,6 +2452,628 @@ function computeRiskScoreAndFinal(portfolioState) {
       });
     }
   }
+
+  // --- PROMPT 11: ESTIMATE COST (A6.9) ---
+  function estimateCost(stock, orderNotionalUsd) {
+    const N = Math.max(0, Number(orderNotionalUsd || 0));
+    const commPct = (portfolioState.inputs.commissionPct !== undefined ? portfolioState.inputs.commissionPct : 0.1) / 100;
+    const taxPct = (portfolioState.inputs.taxPct !== undefined ? portfolioState.inputs.taxPct : 0) / 100;
+    const tierName = stock.liquidity?.tier || "Liquid";
+    const halfSpread = CONFIG.cost?.assumedHalfSpreadPct?.[tierName] ?? 0.0005;
+    const dailyVol = stock.indicators?.dailyVol || 0; // decimal representation, e.g. 0.0157 for 1.57%
+
+    if (N === 0) {
+      return {
+        spreadCostUsd: 0,
+        spreadPct: halfSpread * 100,
+        impactCostUsd: 0,
+        impactPct: 0,
+        commissionCostUsd: 0,
+        commissionPct: commPct * 100,
+        taxCostUsd: 0,
+        taxPct: taxPct * 100,
+        totalCostUsd: 0,
+        costPctOfOrder: 0,
+        dailyVolUsed: dailyVol,
+        dailyVolIsDecimal: true,
+        impactIsCalibrated: false
+      };
+    }
+
+    const spreadCostUsd = N * halfSpread;
+
+    const Y = CONFIG.cost?.impactCoefficient ?? 1.0;
+    const medianDailyVol = stock.indicators?.medianDailyVolume || 0;
+    const price = stock.price || 0;
+    const vDaily = medianDailyVol * price;
+
+    let impactCostUsd = 0;
+    if (vDaily > 0) {
+      impactCostUsd = N * Y * dailyVol * Math.sqrt(N / vDaily);
+    }
+
+    const commissionCostUsd = N * commPct;
+    const taxCostUsd = N * taxPct;
+
+    const totalCostUsd = spreadCostUsd + impactCostUsd + commissionCostUsd + taxCostUsd;
+    const costPctOfOrder = (totalCostUsd / N) * 100;
+    const impactPct = (impactCostUsd / N) * 100;
+
+    return {
+      spreadCostUsd,
+      spreadPct: halfSpread * 100,
+      impactCostUsd,
+      impactPct,
+      commissionCostUsd,
+      commissionPct: commPct * 100,
+      taxCostUsd,
+      taxPct: taxPct * 100,
+      totalCostUsd,
+      costPctOfOrder,
+      dailyVolUsed: dailyVol,
+      dailyVolIsDecimal: true,
+      impactIsCalibrated: false
+    };
+  }
+
+  // --- PROMPT 11: COMPUTE EXECUTABLE POSITION & CONSTRAINT LADDER (A6.10) ---
+  function computeExecutablePosition(stock, desiredPositionUsd, targetPortfolioValue, bucketAmount, maxExecutionDays) {
+    const price = stock.price || 1;
+
+    // Existing holdings
+    const existingItem = (portfolioState.inputs.existingHoldings || []).find(
+      h => h.ticker.toUpperCase() === stock.ticker.toUpperCase()
+    );
+    const existingShares = existingItem ? Number(existingItem.shares || 0) : 0;
+    const existingValueUsd = existingShares * price;
+
+    // Liquidity capacity calculation
+    const medianDailyVol = stock.indicators?.medianDailyVolume || 0;
+    const vDaily = medianDailyVol * price;
+    const partCeiling = stock.liquidity?.participationCeiling ?? 0.03;
+    const maxDailyNotional = vDaily * partCeiling;
+
+    const liquidityCapUsd = existingValueUsd + (maxDailyNotional * maxExecutionDays);
+    const stockCapUsd = targetPortfolioValue * CONFIG.maxWeightPerStock; // 10%
+    const bucketCapUsd = bucketAmount * CONFIG.maxWeightInBucket; // 35% of bucket
+
+    const constraintLadder = [
+      { label: "Model Desired Position", valueUsd: desiredPositionUsd },
+      { label: "Stock Weight Cap (10% Portfolio)", valueUsd: stockCapUsd },
+      { label: "Bucket Concentration Cap (35% Bucket)", valueUsd: bucketCapUsd },
+      { label: "Liquidity Capacity", valueUsd: liquidityCapUsd }
+    ];
+
+    let minVal = Infinity;
+    let bindingLabel = "Model Desired Position";
+
+    for (const c of constraintLadder) {
+      if (c.valueUsd < minVal) {
+        minVal = c.valueUsd;
+        bindingLabel = c.label;
+      }
+    }
+
+    if (Math.abs(minVal - desiredPositionUsd) < 0.01) {
+      bindingLabel = "None (Model Desired Position)";
+    }
+
+    const executablePositionUsd = Math.max(0, minVal);
+
+    return {
+      executablePositionUsd,
+      bindingConstraint: bindingLabel,
+      constraintLadder,
+      existingShares,
+      existingValueUsd,
+      maxDailyNotional,
+      liquidityCapUsd
+    };
+  }
+
+  // --- PROMPT 11: ASSERT INVARIANTS (A10) ---
+  function assertInvariantsA10(portfolioState) {
+    const failures = [];
+    const targetVal = portfolioState.capital.targetPortfolioValue || 500000;
+    const currency = portfolioState.inputs.currency || "USD";
+    const maxExecDays = Number(portfolioState.inputs.maxExecutionDays || 5);
+
+    // 1. Capital Balance Invariant: deployed + undeployed === targetVal + fee Surplus
+    const totalAccounted = portfolioState.capital.deployed + portfolioState.capital.undeployed;
+    const feeSurplus = (portfolioState.capital.feeReserveVariance && portfolioState.capital.feeReserveVariance > 0) 
+      ? portfolioState.capital.feeReserveVariance 
+      : 0;
+    const expectedTotal = targetVal + feeSurplus;
+
+    if (Math.abs(totalAccounted - expectedTotal) > 0.05) {
+      failures.push({
+        rule: "Capital Conservation",
+        detail: `Deployed (${formatCurrency(portfolioState.capital.deployed, currency)}) + Undeployed (${formatCurrency(portfolioState.capital.undeployed, currency)}) = ${formatCurrency(totalAccounted, currency)}, does not equal Target Portfolio + Fee Surplus (${formatCurrency(expectedTotal, currency)})`
+      });
+    }
+
+    // 2. Stock Concentration Cap: No position > 10% of target portfolio
+    const maxStockCapUsd = targetVal * CONFIG.maxWeightPerStock + 0.01;
+    portfolioState.stocks.forEach(s => {
+      if ((s.executablePositionUsd || 0) > maxStockCapUsd) {
+        failures.push({
+          rule: "Stock Concentration Cap (10%) Exceeded",
+          detail: `${s.ticker} position ${formatCurrency(s.executablePositionUsd, currency)} exceeds 10% portfolio cap (${formatCurrency(maxStockCapUsd, currency)})`
+        });
+      }
+    });
+
+    // 3. Bucket Concentration Cap: No position > 35% of its bucket allocation
+    portfolioState.stocks.forEach(s => {
+      const bAmt = portfolioState.buckets[s.bucket]?.amount || 0;
+      const maxBucketCapUsd = bAmt * CONFIG.maxWeightInBucket + 0.01;
+      if ((s.executablePositionUsd || 0) > maxBucketCapUsd) {
+        failures.push({
+          rule: "Bucket Concentration Cap (35%) Exceeded",
+          detail: `${s.ticker} position ${formatCurrency(s.executablePositionUsd, currency)} exceeds 35% bucket cap (${formatCurrency(maxBucketCapUsd, currency)})`
+        });
+      }
+    });
+
+    // 4. Liquidity Capacity Cap: No position > liquidityCapUsd
+    portfolioState.stocks.forEach(s => {
+      if (s.executablePositionUsd > ((s.liquidityCapUsd || 0) + 0.01)) {
+        failures.push({
+          rule: "Liquidity Capacity Cap Exceeded",
+          detail: `${s.ticker} position ${formatCurrency(s.executablePositionUsd, currency)} exceeds liquidity capacity cap (${formatCurrency(s.liquidityCapUsd, currency)})`
+        });
+      }
+    });
+
+    // 5. Execution Days Cap: requiredExecutionDays <= maxExecutionDays
+    portfolioState.stocks.forEach(s => {
+      if ((s.requiredExecutionDays || 0) > maxExecDays) {
+        failures.push({
+          rule: "Execution Days Limit Exceeded",
+          detail: `${s.ticker} required execution days (${s.requiredExecutionDays}) exceeds maximum allowed (${maxExecDays})`
+        });
+      }
+    });
+
+    // 6. Empty Bucket Cash Invariant
+    for (const bKey of Object.keys(CONFIG.universe)) {
+      const bState = portfolioState.buckets[bKey];
+      const qualifiers = portfolioState.stocks.filter(s => s.bucket === bKey && s.status === 'qualified');
+      if (qualifiers.length === 0) {
+        if ((bState.deployed || 0) > 0.01) {
+          failures.push({
+            rule: "No-Qualifier Bucket Cash Violation",
+            detail: `Bucket ${bKey.toUpperCase()} has 0 qualifiers but deployed ${formatCurrency(bState.deployed, currency)} into equities`
+          });
+        }
+      }
+    }
+
+    // 7. Cost Cap Invariant: total estimated cost <= 1.5% of portfolio
+    const maxAllowedCost = targetVal * CONFIG.cost.maxTotalCostPct + 0.01;
+    if ((portfolioState.capital.estimatedActualCost || 0) > maxAllowedCost) {
+      failures.push({
+        rule: "Portfolio Cost Cap (1.5%) Exceeded",
+        detail: `Total estimated cost ${formatCurrency(portfolioState.capital.estimatedActualCost, currency)} exceeds 1.5% max cost cap (${formatCurrency(maxAllowedCost, currency)})`
+      });
+    }
+
+    // 8. Strategic Bucket Weights Sum == 1.00
+    let weightSum = 0;
+    for (const bKey of Object.keys(CONFIG.universe)) {
+      weightSum += portfolioState.buckets[bKey]?.finalWeight || 0;
+    }
+    if (Math.abs(weightSum - 1.0) > 1e-5) {
+      failures.push({
+        rule: "Strategic Bucket Weight Sum Error",
+        detail: `Bucket weights sum to ${(weightSum * 100).toFixed(2)}%, not 100%`
+      });
+    }
+
+    portfolioState.invariantFailures = failures;
+    return failures;
+  }
+
+  // --- PROMPT 11: RUN EXECUTABLE POSITION SIZING PIPELINE (A6.8 - A6.12) ---
+  function runExecutablePositionSizingPipeline(portfolioState) {
+    const investableCap = portfolioState.capital.investable || 472000;
+    const maxExecDays = Number(portfolioState.inputs.maxExecutionDays || 5);
+    const currency = portfolioState.inputs.currency || "USD";
+
+    // 1. Existing Holdings Market Value calculation
+    let existingHoldingsVal = 0;
+    (portfolioState.inputs.existingHoldings || []).forEach(h => {
+      const s = portfolioState.stocks.find(st => st.ticker.toUpperCase() === h.ticker.toUpperCase());
+      if (s && s.price) {
+        existingHoldingsVal += Number(h.shares || 0) * s.price;
+      }
+    });
+
+    portfolioState.capital.existingValue = existingHoldingsVal;
+    portfolioState.capital.targetPortfolioValue = investableCap + existingHoldingsVal;
+    const targetVal = portfolioState.capital.targetPortfolioValue;
+
+    // Update bucket amounts in state
+    for (const bKey of Object.keys(CONFIG.universe)) {
+      const bState = portfolioState.buckets[bKey];
+      if (bState) {
+        bState.amount = targetVal * (bState.finalWeight || 0);
+      }
+    }
+
+    // 2. Initialize desired positions for qualified stocks
+    portfolioState.stocks.forEach(s => {
+      if (s.status === 'qualified') {
+        const bAmt = portfolioState.buckets[s.bucket]?.amount || 0;
+        s.desiredPositionUsd = bAmt * (s.weights?.applied || 0);
+        s.currentDesiredUsd = s.desiredPositionUsd;
+      } else {
+        s.desiredPositionUsd = 0;
+        s.currentDesiredUsd = 0;
+        s.executablePositionUsd = 0;
+        s.bindingConstraint = s.status === 'excluded-liquidity' ? 'Illiquid Tier' : (s.bindingConstraint || 'Unqualified');
+      }
+    });
+
+    // 3. Iterative Position Sizing & Undeployed Capital Hierarchy (A6.11)
+    let maxIterations = 25;
+    let iteration = 0;
+    let stable = false;
+
+    while (!stable && iteration < maxIterations) {
+      iteration++;
+      let maxChange = 0;
+
+      for (const bKey of Object.keys(CONFIG.universe)) {
+        portfolioState.buckets[bKey].deployed = 0;
+      }
+
+      // Step A: Calculate executable positions
+      portfolioState.stocks.filter(s => s.status === 'qualified').forEach(s => {
+        const bAmt = portfolioState.buckets[s.bucket]?.amount || 0;
+        const res = computeExecutablePosition(s, s.currentDesiredUsd, targetVal, bAmt, maxExecDays);
+        let execUsd = res.executablePositionUsd;
+
+        // Drop positions below CONFIG.minMeaningfulPosition (2% of portfolio)
+        const minMeaningfulUsd = targetVal * CONFIG.minMeaningfulPosition;
+        if (execUsd > 0 && execUsd < minMeaningfulUsd) {
+          execUsd = 0;
+          res.bindingConstraint = "Minimum Position Size (<2% Portfolio)";
+        }
+
+        const change = Math.abs((s.executablePositionUsd || 0) - execUsd);
+        if (change > maxChange) maxChange = change;
+
+        s.executablePositionUsd = execUsd;
+        s.bindingConstraint = res.bindingConstraint;
+        s.constraintLadder = res.constraintLadder;
+        s.existingShares = res.existingShares;
+        s.existingValueUsd = res.existingValueUsd;
+        s.maxDailyNotional = res.maxDailyNotional;
+        s.liquidityCapUsd = res.liquidityCapUsd;
+
+        portfolioState.buckets[s.bucket].deployed += execUsd;
+      });
+
+      if (maxChange < 0.01) {
+        stable = true;
+        break;
+      }
+
+      // Step B: Redistribution of undeployed capital (within-bucket & across-bucket)
+      for (const bKey of Object.keys(CONFIG.universe)) {
+        const bState = portfolioState.buckets[bKey];
+        const bucketAmt = bState.amount;
+        const bQualifiers = portfolioState.stocks.filter(s => s.bucket === bKey && s.status === 'qualified');
+
+        const unconstrainedQualifiers = bQualifiers.filter(s => {
+          const testRes = computeExecutablePosition(s, s.currentDesiredUsd + 1000, targetVal, bucketAmt, maxExecDays);
+          return testRes.executablePositionUsd > s.executablePositionUsd;
+        });
+
+        const undeployedInBucket = Math.max(0, bucketAmt - bState.deployed);
+
+        if (undeployedInBucket > 0.01 && unconstrainedQualifiers.length > 0) {
+          const weightSum = unconstrainedQualifiers.reduce((sum, s) => sum + (s.weights?.applied || 0), 0);
+          if (weightSum > 0) {
+            unconstrainedQualifiers.forEach(s => {
+              const addUsd = undeployedInBucket * ((s.weights?.applied || 0) / weightSum);
+              s.currentDesiredUsd += addUsd;
+            });
+          }
+        }
+      }
+    }
+
+    // 4. Calculate Incremental Orders & Cost Estimation (A6.8, A6.9)
+    let totalEstimatedCost = 0;
+
+    portfolioState.stocks.forEach(s => {
+      if (s.executablePositionUsd > 0 || (s.existingShares && s.existingShares > 0)) {
+        const price = s.price || 1;
+        const targetShares = portfolioState.inputs.fractionalShares 
+          ? (s.executablePositionUsd / price) 
+          : Math.floor(s.executablePositionUsd / price);
+
+        s.targetShares = targetShares;
+        s.existingShares = s.existingShares || 0;
+        s.existingValueUsd = s.existingShares * price;
+
+        s.incrementalShares = targetShares - s.existingShares;
+        s.incrementalNotionalUsd = s.incrementalShares * price;
+        s.orderNotionalUsd = Math.abs(s.incrementalNotionalUsd);
+
+        if (s.incrementalShares > 0.0001) s.orderType = 'buy';
+        else if (s.incrementalShares < -0.0001) s.orderType = 'sell';
+        else s.orderType = 'hold';
+
+        const vDaily = (s.indicators?.medianDailyVolume || 0) * price;
+        s.orderPctOfAdv = vDaily > 0 ? (s.orderNotionalUsd / vDaily) : 0;
+
+        const partCeiling = s.liquidity?.participationCeiling || 0.03;
+        const maxDailyNotional = vDaily * partCeiling;
+        s.requiredExecutionDays = maxDailyNotional > 0 ? Math.ceil(s.orderNotionalUsd / maxDailyNotional) : 0;
+
+        // Estimate cost per A6.9
+        s.cost = estimateCost(s, s.orderNotionalUsd);
+        totalEstimatedCost += s.cost.totalCostUsd;
+      } else {
+        s.targetShares = 0;
+        s.existingShares = s.existingShares || 0;
+        s.existingValueUsd = s.existingShares * (s.price || 1);
+        s.incrementalShares = 0;
+        s.orderNotionalUsd = 0;
+        s.orderType = 'none';
+        s.orderPctOfAdv = 0;
+        s.requiredExecutionDays = 0;
+        s.cost = estimateCost(s, 0);
+      }
+    });
+
+    // 5. Bucket Deployed / Undeployed Summary
+    let totalDeployed = 0;
+    for (const bKey of Object.keys(CONFIG.universe)) {
+      const bState = portfolioState.buckets[bKey];
+      const bQualifiers = portfolioState.stocks.filter(s => s.bucket === bKey && s.status === 'qualified');
+
+      if (bQualifiers.length === 0) {
+        bState.deployed = 0;
+        bState.undeployed = bState.amount;
+      } else {
+        bState.deployed = portfolioState.stocks
+          .filter(s => s.bucket === bKey)
+          .reduce((sum, s) => sum + (s.executablePositionUsd || 0), 0);
+        bState.undeployed = Math.max(0, bState.amount - bState.deployed);
+      }
+
+      totalDeployed += bState.deployed;
+    }
+
+    // 6. Provisional Fee Reserve Reconciliation (A6.12)
+    const provisionalReserve = portfolioState.capital.provisionalFeeReserve || 0;
+    const feeReserveVariance = provisionalReserve - totalEstimatedCost;
+
+    portfolioState.capital.estimatedActualCost = totalEstimatedCost;
+    portfolioState.capital.feeReserveVariance = feeReserveVariance;
+    portfolioState.capital.deployed = totalDeployed;
+
+    const baseUndeployed = Math.max(0, targetVal - totalDeployed);
+    portfolioState.capital.undeployed = baseUndeployed + (feeReserveVariance > 0 ? feeReserveVariance : 0);
+
+    // 7. Assert Invariants (A10)
+    assertInvariantsA10(portfolioState);
+  }
+
+  // --- PROMPT 11: RENDER EXECUTABLE PORTFOLIO UI ---
+  function renderExecutablePortfolio() {
+    const bannerContainer = document.getElementById('invariant-banner-container');
+    const summaryContainer = document.getElementById('executable-summary-container');
+    const positionsContainer = document.getElementById('executable-positions-container');
+
+    if (!bannerContainer || !summaryContainer || !positionsContainer) return;
+
+    const currency = portfolioState.inputs.currency || "USD";
+    const failures = portfolioState.invariantFailures || [];
+
+    // 1. Invariant Banner
+    if (failures.length === 0) {
+      bannerContainer.innerHTML = `
+        <div style="background: #e8f5e9; border: 1px solid #2e7d32; color: #1b5e20; padding: 0.75rem 1rem; border-radius: 4px; font-size: 0.9rem;">
+          <div style="font-weight: bold; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
+            <span>✓ ALL A10 PORTFOLIO INVARIANTS PASSED</span>
+          </div>
+          <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: #2e7d32;">
+            Verified: Capital conservation, 10% stock cap, 35% bucket cap, liquidity capacity limits, execution days cap, empty bucket cash rules, and transaction cost cap.
+          </p>
+        </div>
+      `;
+    } else {
+      let failHtml = `
+        <div style="background: #ffebee; border: 1px solid var(--error); color: var(--error); padding: 0.75rem 1rem; border-radius: 4px; font-size: 0.9rem;">
+          <div style="font-weight: bold; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
+            <span>⚠️ INVARIANT VERIFICATION FAILURE (${failures.length} issues detected)</span>
+          </div>
+          <ul style="margin: 0.5rem 0 0; padding-left: 1.25rem; font-size: 0.85rem;">
+      `;
+      failures.forEach(f => {
+        failHtml += `<li><strong>${f.rule}:</strong> ${f.detail}</li>`;
+      });
+      failHtml += `</ul></div>`;
+      bannerContainer.innerHTML = failHtml;
+    }
+
+    // 2. Capital & Fee Reconciliation Summary Waterfall
+    const targetVal = portfolioState.capital.targetPortfolioValue || 500000;
+    const deployed = portfolioState.capital.deployed || 0;
+    const undeployed = portfolioState.capital.undeployed || 0;
+    const estimatedCost = portfolioState.capital.estimatedActualCost || 0;
+    const feeVariance = portfolioState.capital.feeReserveVariance || 0;
+    const provReserve = portfolioState.capital.provisionalFeeReserve || 0;
+
+    const deployedPct = targetVal > 0 ? (deployed / targetVal) * 100 : 0;
+    const undeployedPct = targetVal > 0 ? (undeployed / targetVal) * 100 : 0;
+
+    const isShortfall = feeVariance < 0;
+    const varianceLabel = isShortfall ? "Fee Shortfall" : "Surplus Returned";
+    const varianceColor = isShortfall ? "color: var(--error);" : "color: #2e7d32;";
+    const varianceSign = isShortfall ? "-" : "+";
+    const varianceStr = `${varianceSign}${formatCurrency(Math.abs(feeVariance), currency)}`;
+
+    summaryContainer.innerHTML = `
+      <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1rem; font-size: 0.9rem;">
+        <h3 style="margin-top: 0; font-size: 1rem; color: var(--ink);">Capital Reconciliation & Cost Summary</h3>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: 0.75rem;">
+          <div style="background: #f4f3ef; padding: 0.75rem; border-radius: 4px; border: 1px solid var(--line);">
+            <div style="color: #666; font-size: 0.8rem;">Target Portfolio Value</div>
+            <div style="font-size: 1.1rem; font-weight: bold; font-family: monospace;">${formatCurrency(targetVal, currency)}</div>
+          </div>
+          <div style="background: #e8f5e9; padding: 0.75rem; border-radius: 4px; border: 1px solid #c8e6c9;">
+            <div style="color: #2e7d32; font-size: 0.8rem;">Equities Deployed</div>
+            <div style="font-size: 1.1rem; font-weight: bold; font-family: monospace; color: #2e7d32;">${formatCurrency(deployed, currency)} (${deployedPct.toFixed(1)}%)</div>
+          </div>
+          <div style="background: #fff8e1; padding: 0.75rem; border-radius: 4px; border: 1px solid #ffe082;">
+            <div style="color: #856404; font-size: 0.8rem;">Undeployed Cash Held</div>
+            <div style="font-size: 1.1rem; font-weight: bold; font-family: monospace; color: #856404;">${formatCurrency(undeployed, currency)} (${undeployedPct.toFixed(1)}%)</div>
+          </div>
+          <div style="background: ${isShortfall ? '#ffebee' : '#f4f3ef'}; padding: 0.75rem; border-radius: 4px; border: 1px solid ${isShortfall ? 'var(--error)' : 'var(--line)'};">
+            <div style="color: ${isShortfall ? 'var(--error)' : '#666'}; font-size: 0.8rem;">Fee Reserve Reconciliation</div>
+            <div style="font-size: 0.85rem; font-family: monospace; margin-top: 0.25rem;">
+              Prov. Reserve: ${formatCurrency(provReserve, currency)}<br>
+              Est. Cost: <strong>${formatCurrency(estimatedCost, currency)}</strong><br>
+              ${varianceLabel}: <strong style="${varianceColor}">${varianceStr}</strong>
+            </div>
+          </div>
+        </div>
+        ${isShortfall ? `
+          <div style="background: #ffebee; border: 1px solid var(--error); color: var(--error); padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.85rem; margin-top: 0.75rem; font-weight: bold; display: flex; align-items: center; gap: 0.5rem;">
+            <span>⚠️ FEE RESERVE SHORTFALL WARNING:</span> Estimated transaction costs (${formatCurrency(estimatedCost, currency)}) exceed provisional fee reserve (${formatCurrency(provReserve, currency)}) by ${formatCurrency(Math.abs(feeVariance), currency)}.
+          </div>
+        ` : ''}
+      </div>
+    `;
+
+    // 3. Executable Positions Table
+    let posHtml = `
+      <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
+          <h3 style="margin: 0; font-size: 1rem; color: var(--ink);">Executable Positions & Incremental Order Execution</h3>
+          <span style="font-size: 0.8rem; background: #fff3e0; color: #e65100; padding: 0.2rem 0.5rem; border-radius: 3px; font-weight: bold; border: 1px solid #ffe0b2;">
+            ⚠️ Market Impact Uncalibrated (Y=1.0)
+          </span>
+        </div>
+
+        <div class="table-scroll-container">
+          <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right;">
+            <thead>
+              <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
+                <th class="sticky-col" style="text-align: left; padding: 6px;">Ticker</th>
+                <th style="text-align: left; padding: 6px;">Bucket</th>
+                <th style="text-align: left; padding: 6px;">Status</th>
+                <th class="num-cell" style="padding: 6px;">Existing Holding</th>
+                <th class="num-cell" style="padding: 6px;">Desired Pos ($)</th>
+                <th class="num-cell" style="padding: 6px; background: #e8f5e9; font-weight: bold;">Executable Pos ($)</th>
+                <th class="num-cell" style="padding: 6px; background: #e8f5e9; font-weight: bold;">Exec Weight</th>
+                <th class="num-cell" style="padding: 6px;">Incremental Order</th>
+                <th style="text-align: center; padding: 6px;">Order Type</th>
+                <th class="num-cell" style="padding: 6px;">Order % ADV</th>
+                <th class="num-cell" style="padding: 6px;">Exec Days</th>
+                <th class="num-cell" style="padding: 6px;">Est. Cost & Component Breakdown</th>
+                <th style="text-align: left; padding: 6px;">Binding Constraint</th>
+              </tr>
+            </thead>
+            <tbody>
+    `;
+
+    portfolioState.stocks.forEach(s => {
+      const isQ = s.status === 'qualified';
+      const isExec = (s.executablePositionUsd || 0) > 0;
+
+      const existingShares = s.existingShares || 0;
+      const existingVal = s.existingValueUsd || 0;
+      const existingStr = existingShares > 0 ? `${existingShares} sh (${formatCurrency(existingVal, currency)})` : '&mdash;';
+
+      const desiredUsdStr = isQ ? formatCurrency(s.desiredPositionUsd, currency) : '$0.00';
+      const execUsdStr = formatCurrency(s.executablePositionUsd, currency);
+      const execWtStr = targetVal > 0 ? `${((s.executablePositionUsd / targetVal) * 100).toFixed(1)}%` : '0.0%';
+
+      const incShares = s.incrementalShares || 0;
+      const incNotional = s.orderNotionalUsd || 0;
+      const incSharesFormatted = portfolioState.inputs.fractionalShares ? incShares.toFixed(2) : Math.round(incShares).toString();
+      const incOrderStr = (incNotional > 0) ? `${incSharesFormatted} sh (${formatCurrency(incNotional, currency)})` : '&mdash;';
+
+      let orderTypeBadge = '&mdash;';
+      if (s.orderType === 'buy') {
+        orderTypeBadge = `<span style="background: #e8f5e9; color: #2e7d32; padding: 0.1rem 0.4rem; border-radius: 3px; font-weight: bold;">BUY</span>`;
+      } else if (s.orderType === 'sell') {
+        orderTypeBadge = `<span style="background: #ffebee; color: #c62828; padding: 0.1rem 0.4rem; border-radius: 3px; font-weight: bold;">SELL</span>`;
+      } else if (s.orderType === 'hold' && existingShares > 0) {
+        orderTypeBadge = `<span style="background: #e0e0e0; color: #424242; padding: 0.1rem 0.4rem; border-radius: 3px; font-weight: bold;">HOLD</span>`;
+      }
+
+      const orderAdvPct = (s.orderPctOfAdv || 0) * 100;
+      const orderAdvBps = (s.orderPctOfAdv || 0) * 10000;
+      const orderAdvStr = (s.orderNotionalUsd && s.orderNotionalUsd > 0)
+        ? `<div>${orderAdvPct.toFixed(4)}%</div><div style="font-size: 0.7rem; color: #666;">(${orderAdvBps.toFixed(2)} bps)</div>`
+        : '&mdash;';
+
+      const reqDaysStr = s.requiredExecutionDays !== undefined ? `${s.requiredExecutionDays} day${s.requiredExecutionDays === 1 ? '' : 's'}` : '&mdash;';
+
+      const costObj = s.cost || {};
+      let costCellHtml = '$0.00';
+      if (costObj.totalCostUsd) {
+        costCellHtml = `
+          <div><strong>${formatCurrency(costObj.totalCostUsd, currency)}</strong> (${costObj.costPctOfOrder.toFixed(2)}%)</div>
+          <div style="font-size: 0.7rem; color: #444; margin-top: 0.15rem; line-height: 1.25;">
+            Comm: ${(costObj.commissionPct || 0).toFixed(2)}% | Tax: ${(costObj.taxPct || 0).toFixed(2)}%<br>
+            Spread: ${(costObj.spreadPct || 0).toFixed(2)}% | Impact: ${(costObj.impactPct || 0).toFixed(4)}%
+          </div>
+          <div style="font-size: 0.65rem; color: #666; margin-top: 0.1rem;">
+            Daily Vol: ${(costObj.dailyVolUsed || 0).toFixed(4)} (decimal) / ${((costObj.dailyVolUsed || 0) * 100).toFixed(2)}%
+          </div>
+        `;
+      }
+
+      const constraintStr = s.bindingConstraint || '&mdash;';
+
+      posHtml += `
+        <tr class="${isExec ? '' : 'unqualified-row'}" style="${isExec ? '' : 'opacity: 0.6; background: #f9f9f9;'} border-bottom: 1px solid #eee;">
+          <td class="sticky-col" style="text-align: left; padding: 6px;"><strong>${s.ticker}</strong></td>
+          <td style="text-align: left; padding: 6px;">${s.bucket}</td>
+          <td style="text-align: left; padding: 6px;">${isQ ? '<span style="color: #2e7d32; font-weight: bold;">qualified</span>' : `<span style="color: #c62828;">${s.status}</span>`}</td>
+          <td class="num-cell" style="padding: 6px;">${existingStr}</td>
+          <td class="num-cell" style="padding: 6px;">${desiredUsdStr}</td>
+          <td class="num-cell" style="padding: 6px; background: #f1f8e9; font-weight: bold; color: #2e7d32;">${execUsdStr}</td>
+          <td class="num-cell" style="padding: 6px; background: #f1f8e9; font-weight: bold;">${execWtStr}</td>
+          <td class="num-cell" style="padding: 6px;">${incOrderStr}</td>
+          <td style="text-align: center; padding: 6px;">${orderTypeBadge}</td>
+          <td class="num-cell" style="padding: 6px;">${orderAdvStr}</td>
+          <td class="num-cell" style="padding: 6px;">${reqDaysStr}</td>
+          <td class="num-cell" style="padding: 6px; text-align: right;" title="Breakdown: Commission %, Tax %, Half-Spread %, Market Impact %">${costCellHtml}</td>
+          <td style="text-align: left; padding: 6px; font-size: 0.75rem; color: #555;">${constraintStr}</td>
+        </tr>
+      `;
+    });
+
+    posHtml += `
+          </tbody>
+          <tfoot>
+            <tr style="background: #f4f3ef; font-weight: bold; border-top: 2px solid var(--line);">
+              <td class="sticky-col" style="background: #f4f3ef;">Portfolio Totals</td>
+              <td colspan="4" class="num-cell" style="padding: 6px;">Total Executed Portfolio:</td>
+              <td class="num-cell" style="padding: 6px; color: #2e7d32; font-size: 0.9rem;">${formatCurrency(deployed, currency)}</td>
+              <td class="num-cell" style="padding: 6px;">${deployedPct.toFixed(1)}%</td>
+              <td colspan="4" class="num-cell" style="padding: 6px;">Total Estimated Transaction Cost:</td>
+              <td class="num-cell" style="padding: 6px;">${formatCurrency(estimatedCost, currency)}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  `;
+
+  positionsContainer.innerHTML = posHtml;
+}
 
 
   // --- QUALIFICATION SUMMARY (DIAGNOSTICS) ---

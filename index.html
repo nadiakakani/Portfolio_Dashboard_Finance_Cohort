@@ -51,8 +51,8 @@
         </div>
 
         <div class="field-group">
-          <label for="tax-pct">Transaction Tax (%)</label>
-          <input id="tax-pct" name="taxPct" type="number" value="0.5" min="0" max="5" step="0.01" required />
+          <label for="tax-pct">Transaction tax (%) &mdash; 0 for US equities; set for markets that levy stamp duty</label>
+          <input id="tax-pct" name="taxPct" type="number" value="0" min="0" max="5" step="0.01" required />
         </div>
 
         <div class="field-group checkbox-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
@@ -206,6 +206,25 @@
 
       <div id="desired-positions-container" style="margin-top: 1.5rem;">
         <p class="placeholder">Run analysis to see desired positions (USD).</p>
+      </div>
+    </section>
+
+    <!-- EXECUTABLE PORTFOLIO, INCREMENTAL ORDERS, COSTS & CONSTRAINTS PANEL -->
+    <section class="panel" id="executable-portfolio-panel" style="margin-top: 1.5rem;">
+      <h2>5. Executable Portfolio, Incremental Orders, Costs & Invariants (A6.8–A6.12, A10)</h2>
+      <p class="field-hint">Enforces position caps (10% stock, 35% bucket), liquidity capacity limits, transaction costs, undeployed capital hierarchy, and A10 invariant verification.</p>
+      
+      <!-- Invariant Verification Banner -->
+      <div id="invariant-banner-container" style="margin-top: 1rem;"></div>
+
+      <!-- Capital & Fee Reconciliation Summary Waterfall -->
+      <div id="executable-summary-container" style="margin-top: 1rem;">
+        <p class="placeholder">Run analysis to see executable portfolio capital reconciliation and cost summary.</p>
+      </div>
+
+      <!-- Executable Positions & Incremental Orders Table -->
+      <div id="executable-positions-container" style="margin-top: 1.5rem;">
+        <p class="placeholder">Run analysis to see executable positions table.</p>
       </div>
     </section>
     </div> <!-- END TAB DASHBOARD -->
