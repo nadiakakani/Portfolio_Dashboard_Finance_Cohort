@@ -90,17 +90,41 @@
       </form>
     </section>
 
-    <!-- EXISTING HOLDINGS SUB-PANEL -->
+    <!-- EXISTING HOLDINGS & UNIVERSE ADDITIONS SUB-PANEL -->
     <section class="panel" id="holdings-panel">
-      <h2>Existing Holdings</h2>
-      <p class="field-hint">Add any current holdings (ticker & share count). Empty is valid and means a fresh portfolio.</p>
-      <div class="holding-input-row" style="display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem;">
-        <input id="new-holding-ticker" type="text" placeholder="Ticker (e.g. MSFT)" style="max-width: 140px;" />
-        <input id="new-holding-shares" type="number" placeholder="Share count" min="0" step="any" style="max-width: 140px;" />
-        <button type="button" id="add-holding-btn" style="margin: 0;">Add Holding</button>
-      </div>
-      <div id="holdings-list" class="holdings-list" style="margin-top: 0.75rem;">
-        <p class="placeholder">No existing holdings added.</p>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem;">
+        <div>
+          <h2 style="font-size: 1.1rem; margin-top: 0;">Existing Holdings</h2>
+          <p class="field-hint">Add any current holdings (ticker & share count). Empty is valid and means a fresh portfolio.</p>
+          <div class="holding-input-row" style="display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem; flex-wrap: wrap;">
+            <input id="new-holding-ticker" type="text" placeholder="Ticker (e.g. MSFT)" style="max-width: 140px;" />
+            <input id="new-holding-shares" type="number" placeholder="Share count" min="0" step="any" style="max-width: 140px;" />
+            <button type="button" id="add-holding-btn" style="margin: 0;">Add Holding</button>
+            <button type="button" id="clear-holdings-btn" style="margin: 0; background: #666; color: white;">Clear Holdings</button>
+          </div>
+          <div id="holdings-list" class="holdings-list" style="margin-top: 0.75rem;">
+            <p class="placeholder">No existing holdings added.</p>
+          </div>
+        </div>
+
+        <div style="border-left: 1px solid var(--line); padding-left: 1.25rem;">
+          <h2 style="font-size: 1.1rem; margin-top: 0;">Add Ticker to Universe</h2>
+          <p class="field-hint">Add custom tickers outside CONFIG.universe to evaluate in analysis.</p>
+          <div class="universe-input-row" style="display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem; flex-wrap: wrap;">
+            <input id="new-universe-ticker" type="text" placeholder="Ticker (e.g. TTE)" style="max-width: 130px;" />
+            <select id="new-universe-bucket" style="max-width: 130px; padding: 0.4rem 0.5rem; border: 1px solid var(--line); border-radius: 4px; font-size: 0.85rem; background: var(--surface); color: var(--ink);">
+              <option value="steady">Steady</option>
+              <option value="growth">Growth</option>
+              <option value="cyclical" selected>Cyclical</option>
+              <option value="defensive">Defensive</option>
+            </select>
+            <button type="button" id="add-universe-ticker-btn" style="margin: 0;">Add Ticker</button>
+            <button type="button" id="clear-universe-tickers-btn" style="margin: 0; background: #666; color: white;">Clear Added</button>
+          </div>
+          <div id="added-tickers-list" class="holdings-list" style="margin-top: 0.75rem;">
+            <p class="placeholder">No custom tickers added.</p>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -116,7 +140,7 @@
         <div style="display: flex; justify-content: space-between; color: #555;"><span>(-) Provisional Fee Reserve (Commission + Tax):</span> <span id="wf-fees">$3,000.00</span></div>
         <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 1px dashed var(--line); padding-top: 0.25rem;"><span>(=) Investable Capital:</span> <span id="wf-investable">$472,000.00</span></div>
         <div style="display: flex; justify-content: space-between; color: #555;"><span>(+) Existing Holdings Market Value:</span> <span id="wf-existing-add">$0.00</span></div>
-        <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 1px solid var(--ink); padding-top: 0.25rem; font-size: 1rem;"><span>(=) Target Portfolio Value:</span> <strong id="wf-target">$472,000.00</strong></div>
+        <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 1px solid var(--ink); padding-top: 0.25rem; font-size: 1rem;"><span>(=) Total Portfolio Value (capital + holdings):</span> <strong id="wf-target">$472,000.00</strong></div>
       </div>
 
       <h3>Strategic Bucket Weights (<span id="weight-mode-label">Formula-Derived from R=0.5</span>)</h3>
@@ -200,9 +224,71 @@
       <div id="stocks-data-list" style="margin-top: 1rem;"></div>
     </section>
 
+    <!-- EXECUTION FEASIBILITY PANEL -->
+    <section class="panel" id="execution-feasibility-panel" style="margin-top: 1.5rem;">
+      <h2 title="Summary of immediate vs staged execution, liquidity blocks, total costs and undeployed capital">4. Execution Feasibility</h2>
+      <p class="field-hint">Feasibility breakdown: immediate vs staged execution, liquidity blocks, fee reserve variance, and undeployed capital breakdown.</p>
+      <div id="execution-feasibility-container" style="margin-top: 1rem;">
+        <p class="placeholder">Run analysis to see Execution Feasibility summary.</p>
+      </div>
+    </section>
+
+    <!-- SCORE & CONSTRAINT TABLE -->
+    <section class="panel" id="score-constraint-panel" style="margin-top: 1.5rem;">
+      <h2 title="Scoring and constraint evaluation grouped by strategic bucket, including expandable constraint ladders for all universe stocks">5. Score & Constraint Table (Grouped by Bucket)</h2>
+      <p class="field-hint">Evaluates score, quality gate, risk, model weight, executable weight, and binding constraints across all stocks. Click any row to expand the full constraint ladder, indicators, fundamentals, sentiment, costs, and data providers.</p>
+      <div id="score-constraint-container" style="margin-top: 1rem;">
+        <p class="placeholder">Run analysis to view the Score & Constraint Table.</p>
+      </div>
+    </section>
+
+    <!-- WEIGHTS CHART PANEL -->
+    <section class="panel" id="weights-chart-panel" style="margin-top: 1.5rem;">
+      <h2 title="Horizontal bar comparison of Model Weight (Desired) vs Executable Weight per stock, sorted by weight and coloured by bucket">6. Model Weight vs. Executable Weight Allocation Chart</h2>
+      <p class="field-hint">Compares Model Weight (Desired) against Final Executable Weight per stock to visually highlight capacity and constraint reductions.</p>
+      <div id="weights-chart-container" style="margin-top: 1rem; position: relative; min-height: 350px;">
+        <canvas id="weights-chart-canvas"></canvas>
+      </div>
+    </section>
+
+    <!-- PROPOSED TRADES PANEL -->
+    <section class="panel" id="proposed-trades-panel" style="margin-top: 1.5rem;">
+      <h2 title="Actionable rebalance order proposals detailing side, shares, weights, prices, costs, required days, constraints, and data confidence">7. Proposed Trades</h2>
+      <p class="field-hint">Rebalance order proposals with trade sides (BUY, SELL, HOLD, NO ACTION, BLOCKED), quantities, reference prices, estimated costs, required execution days, and binding constraints.</p>
+      <div id="proposed-trades-container" style="margin-top: 1rem;">
+        <p class="placeholder">Run analysis to see Proposed Trades table.</p>
+      </div>
+    </section>
+
+    <!-- EXECUTIVE SUMMARY PANEL -->
+    <section class="panel" id="executive-summary-panel" style="margin-top: 1.5rem;">
+      <h2 title="AI-generated investment committee executive summary derived strictly from computed portfolio state and constraints">Executive Summary</h2>
+      <p class="field-hint">Investment committee executive summary report generated via OpenRouter JSON schema from computed portfolio state.</p>
+      
+      <div id="executive-summary-container" style="margin-top: 1rem;">
+        <p class="placeholder">Run analysis to generate Executive Summary.</p>
+      </div>
+    </section>
+
+    <!-- CORRELATION HEATMAP PANEL -->
+    <section class="panel" id="correlation-heatmap-panel" style="margin-top: 1.5rem;">
+      <h2 title="Pairwise Pearson correlation matrix computed from historical daily returns of selected portfolio holdings">8. Selected Holdings Correlation Heatmap</h2>
+      <div id="correlation-heatmap-container" style="margin-top: 1rem;">
+        <p class="placeholder">Run analysis to compute selected holdings correlation matrix.</p>
+      </div>
+    </section>
+
+    <!-- WARNINGS & HARD BLOCKS PANEL -->
+    <section class="panel" id="warnings-blocks-panel" style="margin-top: 1.5rem;">
+      <h2 title="Soft portfolio warnings and collapsed red hard blocks audit trail">9. Warnings & Hard Blocks Audit</h2>
+      <div id="warnings-blocks-container" style="margin-top: 1rem;">
+        <p class="placeholder">Run analysis to see warnings and hard blocks audit.</p>
+      </div>
+    </section>
+
     <!-- MODEL SIZING & WEIGHTING METHOD COMPARISON PANEL -->
-    <section class="panel" id="comparison-sizing-panel">
-      <h2>4. Model Sizing & Weighting Method Comparison (Model Wants)</h2>
+    <section class="panel" id="comparison-sizing-panel" style="margin-top: 1.5rem;">
+      <h2>10. Model Sizing & Weighting Method Comparison (Model Wants)</h2>
       <p class="field-hint">Sizes within-bucket allocations across qualifiers before execution caps/liquidity limits (Prompt 11).</p>
       
       <div id="method-comparison-container" style="margin-top: 1rem;">
@@ -216,7 +302,7 @@
 
     <!-- EXECUTABLE PORTFOLIO, INCREMENTAL ORDERS, COSTS & CONSTRAINTS PANEL -->
     <section class="panel" id="executable-portfolio-panel" style="margin-top: 1.5rem;">
-      <h2>5. Executable Portfolio, Incremental Orders, Costs & Invariants (A6.8–A6.12, A10)</h2>
+      <h2>11. Executable Portfolio, Capital Reconciliation & Invariants (A6.8–A6.12, A10)</h2>
       <p class="field-hint">Enforces position caps (10% stock, 35% bucket), liquidity capacity limits, transaction costs, undeployed capital hierarchy, and A10 invariant verification.</p>
       
       <!-- Invariant Verification Banner -->
@@ -331,6 +417,13 @@
               <!-- JS populated -->
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <section class="panel" style="margin-top: 1.5rem;">
+        <h2>Volatility & Data Integrity Diagnostic</h2>
+        <div id="volatility-integrity-diagnostic-content" style="font-family: monospace; font-size: 0.85rem; padding: 1rem; background: var(--surface); border-radius: 4px; margin-top: 1rem; color: #333; line-height: 1.6;">
+          Run Analysis to see Volatility & Data Integrity Diagnostic.
         </div>
       </section>
     </div> <!-- END TAB DIAGNOSTICS -->

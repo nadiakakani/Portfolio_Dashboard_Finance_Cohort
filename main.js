@@ -1,3 +1,5 @@
+import Chart from 'chart.js/auto';
+
 // GenAI Finance Dashboard - Prompt 2
 const CONFIG = {
   benchmark: "SPY",              // fetched once, shared: relative strength + regime overlay
@@ -107,6 +109,7 @@ let portfolioState = {
     totalInvestment: 500000,
     currency: "USD",
     existingHoldings: [],
+    customTickers: [],
     cashReservePct: 5,
     commissionPct: 0.1,
     taxPct: 0.5,
@@ -153,6 +156,17 @@ let portfolioState = {
 };
 
 let activePreset = null; // null or "balanced"
+
+// HTML Escaping helper
+function escapeHtml(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 // Currency formatting helper
 function formatCurrency(amount, currency = "USD") {
@@ -416,6 +430,106 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Automatic Executive Summary Generator Function
+  async function generateExecutiveSummaryAuto() {
+    const container = document.getElementById('executive-summary-container');
+    if (!container) return;
+
+    if (!portfolioState.stocks || portfolioState.stocks.length === 0) {
+      container.innerHTML = '<p class="placeholder">Run analysis to generate Executive Summary.</p>';
+      return;
+    }
+
+    const openRouterKey = document.getElementById('openrouter-key')?.value.trim();
+    if (!openRouterKey) {
+      container.innerHTML = `
+        <div style="background: #fff8e1; border: 1px solid #ffe082; border-radius: 6px; padding: 1rem; color: #856404;">
+          <h4 style="margin: 0 0 0.5rem 0;">ℹ️ Executive Summary Not Generated</h4>
+          <p style="margin: 0; font-size: 0.85rem;">OpenRouter API Key is missing. Please configure your OpenRouter API key in the <strong>API Keys Configuration</strong> section to automatically produce executive summaries upon running analysis.</p>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = `
+      <div style="padding: 1.5rem; text-align: center; color: var(--ink); font-size: 0.9rem; background: var(--surface); border: 1px solid var(--line); border-radius: 6px;">
+        <span style="display: inline-block;">⏳</span> Generating Executive Summary via OpenRouter JSON schema…
+      </div>
+    `;
+
+    try {
+      const targetVal = portfolioState.capital.targetPortfolioValue || 472000;
+      const compactProjection = {
+        mandate_inputs: {
+          investableCapital: portfolioState.inputs.investableCapital,
+          cashReservePct: portfolioState.inputs.cashReservePct,
+          riskTolerance: portfolioState.inputs.riskTolerance,
+          weightMode: portfolioState.inputs.weightMode,
+          currency: portfolioState.inputs.currency,
+          maxExecutionDays: portfolioState.inputs.maxExecutionDays,
+          rebalanceTolerancePct: portfolioState.inputs.rebalanceTolerancePct,
+          fractionalShares: portfolioState.inputs.fractionalShares
+        },
+        capital_summary: {
+          targetPortfolioValue: portfolioState.capital.targetPortfolioValue,
+          existingValue: portfolioState.capital.existingValue,
+          investableCapital: portfolioState.capital.investable,
+          deployedCapital: portfolioState.capital.deployed,
+          undeployedCapital: portfolioState.capital.undeployed,
+          grossPurchases: portfolioState.capital.grossPurchases,
+          grossSales: portfolioState.capital.grossSales,
+          netCashRequirement: portfolioState.capital.netCashRequirement,
+          availableCashForPurchases: portfolioState.capital.availableCashForPurchases,
+          estimatedActualCost: portfolioState.capital.estimatedActualCost,
+          provisionalFeeReserve: portfolioState.capital.provisionalFeeReserve,
+          feeReserveVariance: portfolioState.capital.feeReserveVariance
+        },
+        bucket_allocation: Object.entries(portfolioState.buckets || {}).reduce((acc, [key, b]) => {
+          acc[key] = {
+            strategicWeightPct: ((b.finalWeight || 0) * 100).toFixed(1) + '%',
+            targetAmountUsd: b.amount,
+            deployedUsd: b.deployed
+          };
+          return acc;
+        }, {}),
+        weighting_method_and_comparison: {
+          weightMode: portfolioState.inputs.weightMode,
+          summary: "Method comparison of within-bucket sizing vs final executable weights after caps"
+        },
+        stocks: portfolioState.stocks.map(s => {
+          const modelW = targetVal > 0 ? ((s.desiredPositionUsd || 0) / targetVal) * 100 : 0;
+          const execW = targetVal > 0 ? ((s.executablePositionUsd || 0) / targetVal) * 100 : 0;
+          return {
+            ticker: s.ticker,
+            bucket: s.bucket,
+            five_component_scores: {
+              trend: s.components?.trend ?? null,
+              momentum: s.components?.momentum ?? null,
+              risk: s.components?.risk ?? null,
+              volume: s.components?.volume ?? null,
+              sentiment: s.components?.sentiment ?? null
+            },
+            final_score: s.finalScore ?? null,
+            confidence_band: s.confidence?.band || 'High',
+            confidence_score: s.confidence?.score || 100,
+            liquidity_tier: s.liquidityTier || 'liquid',
+            desired_weight_pct: Number(modelW.toFixed(2)),
+            executable_weight_pct: Number(execW.toFixed(2)),
+            binding_constraint: s.bindingConstraint || 'Unconstrained',
+            side: s.side || 'NO ACTION',
+            status: s.status
+          };
+        })
+      };
+
+      const result = await callLlmExecutiveSummary(compactProjection, openRouterKey);
+      renderExecutiveSummary(result);
+    } catch (err) {
+      console.error("Executive summary generation error:", err);
+      renderExecutiveSummary({ success: false, error: err.message });
+    }
+  }
+
   // OpenRouter Model Picker Initialization
   async function initOpenRouterModelPicker() {
     const selectEl = document.getElementById('openrouter-model-select');
@@ -564,8 +678,36 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Existing holdings logic
+  // Existing holdings logic with localStorage persistence
+  const HOLDINGS_STORAGE_KEY = 'portfolio_existing_holdings';
+
+  function saveExistingHoldings() {
+    try {
+      localStorage.setItem(HOLDINGS_STORAGE_KEY, JSON.stringify(portfolioState.inputs.existingHoldings || []));
+    } catch (e) {
+      console.warn("Failed to save existing holdings to localStorage:", e);
+    }
+  }
+
+  function loadExistingHoldings() {
+    try {
+      const stored = localStorage.getItem(HOLDINGS_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          portfolioState.inputs.existingHoldings = parsed;
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to load existing holdings from localStorage:", e);
+    }
+  }
+
+  // Restore saved holdings on startup
+  loadExistingHoldings();
+
   const addHoldingBtn = document.getElementById('add-holding-btn');
+  const clearHoldingsBtn = document.getElementById('clear-holdings-btn');
   const holdingTickerInput = document.getElementById('new-holding-ticker');
   const holdingSharesInput = document.getElementById('new-holding-shares');
   const holdingsListEl = document.getElementById('holdings-list');
@@ -592,6 +734,7 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.addEventListener('click', (e) => {
         const idx = Number(e.target.getAttribute('data-index'));
         portfolioState.inputs.existingHoldings.splice(idx, 1);
+        saveExistingHoldings();
         renderHoldings();
         updateDashboardState();
       });
@@ -611,12 +754,133 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
       portfolioState.inputs.existingHoldings.push({ ticker, shares });
+      saveExistingHoldings();
       holdingTickerInput.value = '';
       holdingSharesInput.value = '';
       renderHoldings();
       updateDashboardState();
     });
   }
+
+  if (clearHoldingsBtn) {
+    clearHoldingsBtn.addEventListener('click', () => {
+      portfolioState.inputs.existingHoldings = [];
+      saveExistingHoldings();
+      renderHoldings();
+      updateDashboardState();
+    });
+  }
+
+  // Initial render of restored holdings
+  renderHoldings();
+
+  // --- CUSTOM UNIVERSE TICKERS PERSISTENCE & HANDLERS ---
+  const CUSTOM_TICKERS_STORAGE_KEY = "portfolio_custom_universe_tickers";
+
+  function saveCustomTickers() {
+    try {
+      localStorage.setItem(CUSTOM_TICKERS_STORAGE_KEY, JSON.stringify(portfolioState.inputs.customTickers || []));
+    } catch (e) {
+      console.warn("Failed to save custom universe tickers to localStorage:", e);
+    }
+  }
+
+  function loadCustomTickers() {
+    try {
+      const stored = localStorage.getItem(CUSTOM_TICKERS_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          portfolioState.inputs.customTickers = parsed;
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to load custom universe tickers from localStorage:", e);
+    }
+  }
+
+  loadCustomTickers();
+
+  const addUniverseTickerBtn = document.getElementById('add-universe-ticker-btn');
+  const clearUniverseTickersBtn = document.getElementById('clear-universe-tickers-btn');
+  const universeTickerInput = document.getElementById('new-universe-ticker');
+  const universeBucketSelect = document.getElementById('new-universe-bucket');
+  const addedTickersListEl = document.getElementById('added-tickers-list');
+
+  function renderAddedTickers() {
+    if (!addedTickersListEl) return;
+    const added = portfolioState.inputs.customTickers || [];
+    if (added.length === 0) {
+      addedTickersListEl.innerHTML = '<p class="placeholder">No custom tickers added.</p>';
+      return;
+    }
+
+    const bucketLabels = {
+      steady: "Steady",
+      growth: "Growth",
+      cyclical: "Cyclical",
+      defensive: "Defensive"
+    };
+
+    let html = '<ul style="list-style: none; padding: 0; margin: 0.5rem 0 0; display: flex; flex-wrap: wrap; gap: 0.5rem;">';
+    added.forEach((item, index) => {
+      html += `
+        <li style="display: flex; justify-content: space-between; align-items: center; background: #e0f2fe; border: 1px solid #bae6fd; color: #0369a1; padding: 0.35rem 0.6rem; border-radius: 4px; font-family: monospace; font-size: 0.85rem; font-weight: 500; gap: 0.5rem;">
+          <span><strong>${item.ticker}</strong> (${bucketLabels[item.bucket] || item.bucket})</span>
+          <button type="button" class="remove-added-ticker-btn" data-index="${index}" style="background: var(--error); color: white; border: none; margin: 0; padding: 0.15rem 0.4rem; font-size: 0.75rem; border-radius: 3px; cursor: pointer;">Remove</button>
+        </li>
+      `;
+    });
+    html += '</ul>';
+    addedTickersListEl.innerHTML = html;
+
+    addedTickersListEl.querySelectorAll('.remove-added-ticker-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const idx = Number(e.currentTarget.getAttribute('data-index'));
+        portfolioState.inputs.customTickers.splice(idx, 1);
+        saveCustomTickers();
+        renderAddedTickers();
+        updateDashboardState();
+      });
+    });
+  }
+
+  if (addUniverseTickerBtn) {
+    addUniverseTickerBtn.addEventListener('click', () => {
+      const ticker = universeTickerInput ? universeTickerInput.value.trim().toUpperCase() : '';
+      const bucket = universeBucketSelect ? universeBucketSelect.value : 'cyclical';
+
+      if (!ticker) {
+        alert('Please enter a ticker symbol.');
+        return;
+      }
+
+      portfolioState.inputs.customTickers = portfolioState.inputs.customTickers || [];
+      const exists = portfolioState.inputs.customTickers.some(t => t.ticker === ticker);
+      if (exists) {
+        alert(`${ticker} is already in the added custom tickers list.`);
+        return;
+      }
+
+      portfolioState.inputs.customTickers.push({ ticker, bucket });
+      saveCustomTickers();
+      if (universeTickerInput) universeTickerInput.value = '';
+      renderAddedTickers();
+      updateDashboardState();
+    });
+  }
+
+  if (clearUniverseTickersBtn) {
+    clearUniverseTickersBtn.addEventListener('click', () => {
+      portfolioState.inputs.customTickers = [];
+      saveCustomTickers();
+      renderAddedTickers();
+      updateDashboardState();
+    });
+  }
+
+  // Initial render of restored custom universe tickers
+  renderAddedTickers();
 
   // Run analysis button execution queue for Prompt 3
   const runBtn = document.getElementById('run-analysis-btn');
@@ -746,12 +1010,40 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     if (!finnhubKey) {
-      debug.earlyReturnReason = 'no_api_key';
-      return result; // Return nulls if no key
+      debug.earlyReturnReason = 'Missing Finnhub API Key';
+      result.earlyReturnReason = 'Missing Finnhub API Key';
+      result.errorReason = 'Missing Finnhub API Key';
+      result.errorMessage = 'Missing Finnhub API Key';
+      return result;
+    }
+
+    let finnhubRes = null;
+    let attempts = 0;
+    const maxAttempts = 3;
+    let lastErr = null;
+
+    while (attempts < maxAttempts) {
+      attempts++;
+      try {
+        finnhubRes = await fetch(finnhubUrl);
+        if (finnhubRes.status === 429 && attempts < maxAttempts) {
+          await sleep(1000 * Math.pow(2, attempts - 1));
+          continue;
+        }
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (attempts < maxAttempts) {
+          await sleep(1000 * Math.pow(2, attempts - 1));
+        }
+      }
     }
 
     try {
-        const finnhubRes = await fetch(finnhubUrl);
+        if (!finnhubRes) {
+          throw (lastErr || new Error("Failed after 3 attempts to fetch fundamentals"));
+        }
+
         result.finnhubStatus = finnhubRes.status;
         result.finnhubCallSucceeded = finnhubRes.ok;
         
@@ -760,7 +1052,11 @@ document.addEventListener('DOMContentLoaded', () => {
         result.ratiosStatus = finnhubRes.status;
         result.growthStatus = finnhubRes.status;
 
-        if (finnhubRes.ok) {
+        if (!finnhubRes.ok) {
+            result.earlyReturnReason = `HTTP ${finnhubRes.status}`;
+            result.errorReason = `HTTP ${finnhubRes.status}`;
+            result.errorMessage = `HTTP ${finnhubRes.status}`;
+        } else {
             const data = await finnhubRes.json();
             if (data && data.metric) {
                 if (ticker === 'MSFT') result.msftRawFinnhub = Object.keys(data.metric);
@@ -800,10 +1096,27 @@ document.addEventListener('DOMContentLoaded', () => {
                     roe: roeData.raw,
                     debtEquity: debtEq.raw
                 };
+
+                if (revGrowth.normalized === null || roeData.normalized === null || debtEq.normalized === null) {
+                    const missingKeys = [];
+                    if (revGrowth.normalized === null) missingKeys.push('revenueGrowth');
+                    if (roeData.normalized === null) missingKeys.push('roe');
+                    if (debtEq.normalized === null) missingKeys.push('debtEquity');
+                    result.earlyReturnReason = `Missing metrics in response (${missingKeys.join(', ')})`;
+                    result.errorReason = `Missing metrics in response (${missingKeys.join(', ')})`;
+                    result.errorMessage = `Missing metrics in response (${missingKeys.join(', ')})`;
+                }
+            } else {
+                result.earlyReturnReason = 'Empty or invalid metric object in response';
+                result.errorReason = 'Empty or invalid metric object in response';
+                result.errorMessage = 'Empty or invalid metric object in response';
             }
         }
     } catch (e) {
         console.warn(`Error fetching fundamentals for ${ticker}`, e);
+        result.errorMessage = String(e);
+        result.errorReason = String(e);
+        result.earlyReturnReason = String(e);
     }
 
     localStorage.setItem(cacheKey, JSON.stringify({
@@ -925,6 +1238,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const payload = {
       model: CONFIG.providers.llmModel,
+      temperature: 0,
       messages: [
         {
           role: "system",
@@ -944,7 +1258,7 @@ document.addEventListener('DOMContentLoaded', () => {
             type: "object",
             properties: {
               symbol: { type: "string" },
-              sentiment_score: { type: "integer", description: "-100 to 100" },
+              sentiment_score: { type: "integer", description: "Numerical score from -100 to 100. Positive values (1 to 100) for positive sentiment, negative values (-1 to -100) for negative sentiment, 0 for neutral." },
               sentiment_label: { type: "string", enum: ["positive", "neutral", "negative"] },
               event_type: { type: "string", enum: ["earnings_guidance", "product", "macro", "litigation", "analyst", "other"] },
               time_horizon: { type: "string", enum: ["short", "medium", "long"] },
@@ -973,15 +1287,36 @@ document.addEventListener('DOMContentLoaded', () => {
           body: JSON.stringify(payload)
         });
 
+        const rawText = await res.text();
+
         if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`OpenRouter HTTP ${res.status}: ${text}`);
+          throw new Error(`OpenRouter HTTP ${res.status}: ${rawText}`);
         }
 
-        const data = await res.json();
-        const content = data.choices[0].message.content;
+        let data;
+        try {
+          data = JSON.parse(rawText);
+        } catch (pe) {
+          throw new Error(`OpenRouter raw JSON parse error: ${pe.message}`);
+        }
+
+        const content = (data.choices && data.choices[0] && data.choices[0].message)
+          ? data.choices[0].message.content
+          : null;
+
+        if (!content) {
+          throw new Error(`No choices/content in OpenRouter response`);
+        }
+
         const parsed = JSON.parse(content);
-        return { ...parsed, promptCharCount, headlinesReceivedCount };
+        return { 
+          ...parsed, 
+          rawResponseText: rawText,
+          modelContentText: content,
+          topLevelKeys: Object.keys(parsed),
+          promptCharCount, 
+          headlinesReceivedCount 
+        };
       } catch (e) {
         if (attempt < delays.length) {
           await sleep(delays[attempt]);
@@ -992,7 +1327,236 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-// --- Pure Indicator Functions ---
+  // --- Executive Summary OpenRouter Call & Rendering ---
+  async function callLlmExecutiveSummary(compactProjection, openRouterKey) {
+    const model = CONFIG.providers.llmModel || 'google/gemini-2.0-flash-001';
+    const systemPrompt = `You are an expert quantitative analyst preparing an Executive Summary for an investment committee.
+Follow these rules strictly:
+1. Use ONLY the numbers provided in the input payload data. Do NOT recalculate or introduce any figure not present in the supplied data.
+2. Write for an investment committee: analytical, direct, confident but not overstated. State uncertainty plainly.
+3. Thesis is exactly one sentence.
+4. supporting_signals must be an array of exactly 3 distinct strings.
+5. risk_factors must be an array of exactly 3 distinct strings.
+6. Where a position was reduced or capped, name the specific constraint that bound it (e.g., 10% stock cap, 35% bucket cap, liquidity cap, downtrend filter).
+7. The data_quality_note reflects the supplied confidence bands and must NOT describe confidence as a probability of financial gain.
+8. Market-impact figures are illustrative and uncalibrated; explicitly state so if referring to them.
+9. Provide NO buy or sell advice beyond what the supplied weights and trade sides express.`;
+
+    const userContent = `Portfolio State Data:\n${JSON.stringify(compactProjection, null, 2)}`;
+
+    const jsonSchemaObj = {
+      type: "json_schema",
+      json_schema: {
+        name: "executive_summary_schema",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            thesis: { type: "string" },
+            supporting_signals: {
+              type: "array",
+              items: { type: "string" }
+            },
+            risk_factors: {
+              type: "array",
+              items: { type: "string" }
+            },
+            recommendation: { type: "string" },
+            data_quality_note: { type: "string" }
+          },
+          required: ["thesis", "supporting_signals", "risk_factors", "recommendation", "data_quality_note"],
+          additionalProperties: false
+        }
+      }
+    };
+
+    const payload = {
+      model: model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent }
+      ],
+      response_format: jsonSchemaObj
+    };
+
+    let responseText = "";
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${openRouterKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`OpenRouter HTTP ${res.status}: ${errText}`);
+      }
+
+      const resJson = await res.json();
+      responseText = resJson?.choices?.[0]?.message?.content || "";
+      
+      let cleaned = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(cleaned);
+
+      if (parsed.thesis && Array.isArray(parsed.supporting_signals) && Array.isArray(parsed.risk_factors) && parsed.recommendation && parsed.data_quality_note) {
+        return { success: true, data: parsed };
+      }
+      throw new Error("Response JSON did not match expected schema properties");
+    } catch (err1) {
+      console.warn("First OpenRouter attempt failed or returned invalid schema. Retrying with '{' prefill...", err1);
+      
+      try {
+        const retryPayload = {
+          model: model,
+          messages: [
+            { role: "system", content: systemPrompt + "\nIMPORTANT: Return ONLY raw valid JSON starting with '{'." },
+            { role: "user", content: userContent },
+            { role: "assistant", content: "{" }
+          ]
+        };
+
+        const res2 = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${openRouterKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(retryPayload)
+        });
+
+        if (!res2.ok) {
+          const errText2 = await res2.text();
+          throw new Error(`OpenRouter HTTP ${res2.status} on retry: ${errText2}`);
+        }
+
+        const resJson2 = await res2.json();
+        let rawContent2 = resJson2?.choices?.[0]?.message?.content || "";
+        if (!rawContent2.trim().startsWith('{')) {
+          rawContent2 = "{" + rawContent2;
+        }
+        let cleaned2 = rawContent2.replace(/```json/g, '').replace(/```/g, '').trim();
+        const parsed2 = JSON.parse(cleaned2);
+
+        if (parsed2.thesis && Array.isArray(parsed2.supporting_signals) && Array.isArray(parsed2.risk_factors) && parsed2.recommendation && parsed2.data_quality_note) {
+          return { success: true, data: parsed2 };
+        }
+        return { success: false, raw: rawContent2, error: "Parsed JSON missing required schema fields" };
+      } catch (err2) {
+        return { success: false, raw: responseText || err2.message, error: err2.message };
+      }
+    }
+  }
+
+  function renderExecutiveSummary(summaryData) {
+    const container = document.getElementById('executive-summary-container');
+    if (!container) return;
+
+    if (!summaryData.success) {
+      container.innerHTML = `
+        <div style="background: #ffebee; border: 1px solid #ffcdd2; border-radius: 6px; padding: 1rem; color: #b71c1c;">
+          <h4 style="margin: 0 0 0.5rem 0;">⚠️ Executive Summary Generation Failed</h4>
+          <p style="margin: 0 0 0.5rem 0; font-size: 0.85rem;"><strong>Error:</strong> ${escapeHtml(summaryData.error || 'Unknown error')}</p>
+          ${summaryData.raw ? `
+            <div style="font-size: 0.8rem; background: #fff; padding: 0.5rem; border: 1px solid #ffcdd2; border-radius: 4px; overflow-x: auto; margin-top: 0.5rem;">
+              <strong>Raw Response:</strong><br>
+              <pre style="margin: 0; white-space: pre-wrap;">${escapeHtml(summaryData.raw)}</pre>
+            </div>
+          ` : ''}
+        </div>
+      `;
+      return;
+    }
+
+    const d = summaryData.data;
+
+    const html = `
+      <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1.25rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--ink); padding-bottom: 0.6rem; margin-bottom: 1.25rem;">
+          <div>
+            <h3 style="margin: 0; font-size: 1.1rem; color: var(--ink);">Investment Committee Executive Summary</h3>
+            <span style="font-size: 0.75rem; color: #666;">Derived strictly from portfolioState and active constraints</span>
+          </div>
+          <button id="copy-summary-btn" style="padding: 0.4rem 0.85rem; font-size: 0.8rem; font-weight: bold; background: #f4f3ef; color: var(--ink); border: 1px solid var(--line); border-radius: 4px; cursor: pointer;">
+            📋 Copy summary
+          </button>
+        </div>
+
+        <div style="display: grid; gap: 1.25rem;">
+          <!-- 1. Investment Thesis -->
+          <div style="background: #e0f2fe; border-left: 4px solid #0284c7; padding: 0.85rem 1rem; border-radius: 0 4px 4px 0;">
+            <h4 style="margin: 0 0 0.35rem 0; font-size: 0.85rem; color: #0369a1; text-transform: uppercase; letter-spacing: 0.5px;">1. Investment Thesis</h4>
+            <p style="margin: 0; font-size: 0.95rem; color: #0c4a6e; font-weight: 500; line-height: 1.4;">${escapeHtml(d.thesis)}</p>
+          </div>
+
+          <!-- 2. Supporting Signals -->
+          <div style="background: #fafafa; border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.85rem 1rem;">
+            <h4 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; color: #111827; text-transform: uppercase; letter-spacing: 0.5px;">2. Supporting Signals</h4>
+            <ul style="margin: 0; padding-left: 1.25rem; font-size: 0.85rem; color: #374151; display: grid; gap: 0.35rem;">
+              ${(d.supporting_signals || []).map(sig => `<li>${escapeHtml(sig)}</li>`).join('')}
+            </ul>
+          </div>
+
+          <!-- 3. Risk Factors -->
+          <div style="background: #fff3e0; border-left: 4px solid #f59e0b; padding: 0.85rem 1rem; border-radius: 0 4px 4px 0;">
+            <h4 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; color: #b45309; text-transform: uppercase; letter-spacing: 0.5px;">3. Risk Factors</h4>
+            <ul style="margin: 0; padding-left: 1.25rem; font-size: 0.85rem; color: #78350f; display: grid; gap: 0.35rem;">
+              ${(d.risk_factors || []).map(rf => `<li>${escapeHtml(rf)}</li>`).join('')}
+            </ul>
+          </div>
+
+          <!-- 4. Portfolio Recommendation -->
+          <div style="background: #fafafa; border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.85rem 1rem;">
+            <h4 style="margin: 0 0 0.35rem 0; font-size: 0.85rem; color: #111827; text-transform: uppercase; letter-spacing: 0.5px;">4. Portfolio Recommendation</h4>
+            <p style="margin: 0; font-size: 0.85rem; color: #374151; line-height: 1.5;">${escapeHtml(d.recommendation)}</p>
+          </div>
+
+          <!-- 5. Data Quality Note -->
+          <div style="background: #f3f4f6; border: 1px solid #d1d5db; border-radius: 6px; padding: 0.85rem 1rem;">
+            <h4 style="margin: 0 0 0.35rem 0; font-size: 0.85rem; color: #374151; text-transform: uppercase; letter-spacing: 0.5px;">5. Data Quality Note</h4>
+            <p style="margin: 0; font-size: 0.85rem; color: #4b5563; line-height: 1.4;">${escapeHtml(d.data_quality_note)}</p>
+          </div>
+        </div>
+      </div>
+    `;
+
+    container.innerHTML = html;
+
+    const copyBtn = document.getElementById('copy-summary-btn');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', () => {
+        const plainText = `INVESTMENT COMMITTEE EXECUTIVE SUMMARY
+
+1. INVESTMENT THESIS
+${d.thesis}
+
+2. SUPPORTING SIGNALS
+${(d.supporting_signals || []).map(s => `- ${s}`).join('\n')}
+
+3. RISK FACTORS
+${(d.risk_factors || []).map(r => `- ${r}`).join('\n')}
+
+4. PORTFOLIO RECOMMENDATION
+${d.recommendation}
+
+5. DATA QUALITY NOTE
+${d.data_quality_note}`;
+
+        navigator.clipboard.writeText(plainText).then(() => {
+          const origText = copyBtn.textContent;
+          copyBtn.textContent = '✅ Copied!';
+          setTimeout(() => {
+            copyBtn.textContent = origText;
+          }, 2000);
+        }).catch(err => {
+          console.error("Clipboard copy failed:", err);
+          alert("Could not copy summary to clipboard.");
+        });
+      });
+    }
+  }
 
 function calculateSMA(values, window) {
   const result = new Array(values.length).fill(null);
@@ -1318,15 +1882,15 @@ function computeRiskScoreAndFinal(portfolioState) {
       html += `
         <div style="background: ${bg}; border: 1px solid ${borderCol}; padding: 0.75rem; border-radius: 4px; font-size: 0.85rem;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
-            <div><strong>${s.ticker}</strong> <span style="font-size: 0.75rem; color: #666; text-transform: uppercase;">(${s.bucket})</span></div>
-            <span style="font-size: 0.75rem; padding: 0.1rem 0.4rem; border-radius: 3px; background: ${isError ? '#c62828' : '#2e7d32'}; color: white;">${s.status}</span>
+            <div><strong>${s.ticker}</strong>${s.isAdded ? ` <span style="background: #e0f2fe; color: #0369a1; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; font-weight: bold; border: 1px solid #bae6fd; margin-left: 0.2rem;">added</span>` : ''} <span style="font-size: 0.75rem; color: #666; text-transform: uppercase;">(${s.bucket})</span></div>
+            ${formatStatusBadge(s)}
           </div>
           ${isError ? `<div style="color: var(--error); font-size: 0.75rem; margin-top: 0.25rem;">Error: ${s.errorReason}</div>` : `
             <div style="font-family: monospace; display: grid; gap: 0.15rem; color: #333;">
               <div>Price: <strong>$${s.price?.toFixed(2)}</strong> | As Of: ${s.priceAsOf}</div>
               <div>RSI(14): <strong>${s.indicators.rsi?.toFixed(1) || 'N/A'}</strong> | MACD Hist: <strong>${s.indicators.macdHistogram?.toFixed(2) || 'N/A'}</strong></div>
               <div>SMA50: $${s.indicators.sma50?.toFixed(2) || 'N/A'} | SMA200: $${s.indicators.sma200?.toFixed(2) || 'N/A'}</div>
-              <div>Ann. Vol: <strong>${((s.indicators.annualisedVol || 0)*100).toFixed(1)}%</strong> | Max DD: <strong>${((s.indicators.maxDrawdown || 0)*100).toFixed(1)}%</strong></div>
+              <div>Ann. Vol: <strong>${((s.indicators.annualisedVol || 0)*100).toFixed(1)}% (${CONFIG.indicators.volLookback}-day)</strong> | Max DD: <strong>${((s.indicators.maxDrawdown || 0)*100).toFixed(1)}%</strong></div>
               <div>63d Return: <strong>${((s.indicators.return63d || 0)*100).toFixed(1)}%</strong> | Bars: ${s.barsAvailable}</div>
               <div style="border-top: 1px solid #ccc; margin-top: 0.25rem; padding-top: 0.25rem; font-size: 0.75rem;">
                 <div>Trend: ${s.components?.trend?.toFixed(1) || 0} | Momentum: ${s.components?.momentum?.toFixed(1) || 0} | Risk: ${s.components?.risk?.toFixed(1) || 0} | Volume: ${s.components?.volume?.toFixed(1) || 0} | Sentiment: ${s.components?.sentiment?.toFixed(1) || 0}</div>
@@ -1391,6 +1955,9 @@ function computeRiskScoreAndFinal(portfolioState) {
       runBtn.textContent = 'Running Analysis...';
       if (progressEl) progressEl.textContent = 'Starting analysis queue...';
 
+      // Clear all previous render outputs before new run
+      clearAllOutputs();
+
       try {
         // 1. Fetch Benchmark (SPY) first
         if (progressEl) progressEl.textContent = 'Fetching benchmark SPY... (1 of 21)';
@@ -1426,9 +1993,50 @@ function computeRiskScoreAndFinal(portfolioState) {
         const universeTasks = [];
         for (const [bucketKey, bucketObj] of Object.entries(CONFIG.universe)) {
           bucketObj.tickers.forEach(ticker => {
-            universeTasks.push({ ticker, bucket: bucketKey });
+            universeTasks.push({ ticker, bucket: bucketKey, isAdded: false });
           });
-        } // total 20 tickers
+        }
+
+        // Merge added custom tickers without modifying CONFIG.universe
+        const customTickers = portfolioState.inputs.customTickers || [];
+        customTickers.forEach(item => {
+          const uTicker = item.ticker.trim().toUpperCase();
+          if (!universeTasks.some(t => t.ticker === uTicker)) {
+            universeTasks.push({ ticker: uTicker, bucket: item.bucket, isAdded: true });
+          }
+        });
+
+        const totalTasks = universeTasks.length + 1; // SPY + universeTasks
+
+        // 1. Fetch Benchmark (SPY) first
+        if (progressEl) progressEl.textContent = `Fetching benchmark SPY... (1 of ${totalTasks})`;
+        try {
+          const spyBars = await fetchDailyPrices(CONFIG.benchmark, twelveDataKey, forceRefresh);
+          const latestSpy = spyBars[spyBars.length - 1];
+          const spyCloses = spyBars.map(b => b.close);
+          const spySma200Arr = calculateSMA(spyCloses, CONFIG.indicators.smaSlow);
+          const spyReturn63 = calculatePeriodReturn(spyCloses, CONFIG.indicators.relativeStrengthDays);
+
+          portfolioState.benchmark = {
+            ticker: CONFIG.benchmark,
+            price: latestSpy.close,
+            date: latestSpy.date,
+            barsAvailable: spyBars.length,
+            sma200: spySma200Arr[spySma200Arr.length - 1],
+            return63d: spyReturn63,
+            aboveSma200: latestSpy.close > (spySma200Arr[spySma200Arr.length - 1] || 0),
+            bars: spyBars
+          };
+        } catch (err) {
+          console.error("Benchmark SPY fetch error:", err);
+          portfolioState.benchmark = {
+            ticker: CONFIG.benchmark,
+            price: 0,
+            date: 'Error',
+            barsAvailable: 0,
+            error: err.message
+          };
+        }
 
         portfolioState.stocks = [];
         portfolioState.hardBlocks = [];
@@ -1437,10 +2045,10 @@ function computeRiskScoreAndFinal(portfolioState) {
         for (const task of universeTasks) {
           completedCount++;
           if (progressEl) {
-            progressEl.textContent = `Checking fundamentals… ${completedCount - 1} of 20`;
+            progressEl.textContent = `Checking ${task.ticker}… ${completedCount - 1} of ${universeTasks.length}`;
           }
 
-          const existingHolding = portfolioState.inputs.existingHoldings.find(h => h.ticker === task.ticker);
+          const existingHolding = (portfolioState.inputs.existingHoldings || []).find(h => h.ticker.toUpperCase() === task.ticker.toUpperCase());
           const existingShares = existingHolding ? existingHolding.shares : 0;
 
           try {
@@ -1486,6 +2094,7 @@ function computeRiskScoreAndFinal(portfolioState) {
               ticker: task.ticker,
               name: task.ticker,
               bucket: task.bucket,
+              isAdded: !!task.isAdded,
               price: latestBar.close,
               priceAsOf: latestBar.date,
               barsAvailable: bars.length,
@@ -1526,6 +2135,7 @@ function computeRiskScoreAndFinal(portfolioState) {
               ticker: task.ticker,
               name: task.ticker,
               bucket: task.bucket,
+              isAdded: !!task.isAdded,
               price: 0,
               priceAsOf: 'N/A',
               barsAvailable: 0,
@@ -1539,7 +2149,7 @@ function computeRiskScoreAndFinal(portfolioState) {
           }
 
           // Throttle between calls
-          if (completedCount <= 21) {
+          if (completedCount <= totalTasks) {
             await sleep(CONFIG.throttleMsBetweenCalls);
           }
         }
@@ -1606,10 +2216,29 @@ function computeRiskScoreAndFinal(portfolioState) {
             const headlinesStr = stock.news.headlines.map(n => `- [${n.id}] ${n.headline} (${n.source}, ${n.publishedAt})`).join('\n');
             const userPromptText = `Company: ${stock.ticker}\nHeadlines:\n${headlinesStr}`;
             diag.promptCharCount = userPromptText.length;
+            diag.temperature = 0;
 
             const llmResult = await callLlmSentiment(stock.ticker, stock.news.headlines, openRouterKey);
 
-            const normalised = 50 + (llmResult.sentiment_score / 2);
+            if (!portfolioState.rawSentimentResponses) {
+              portfolioState.rawSentimentResponses = [];
+            }
+            if (portfolioState.rawSentimentResponses.length < 3 && llmResult.rawResponseText) {
+              portfolioState.rawSentimentResponses.push({
+                ticker: stock.ticker,
+                rawText: llmResult.rawResponseText
+              });
+            }
+
+            const rawScoreVal = (llmResult.sentiment_score !== undefined && llmResult.sentiment_score !== null)
+              ? llmResult.sentiment_score
+              : (llmResult.score !== undefined ? llmResult.score : 0);
+
+            const confidenceVal = (llmResult.confidence !== undefined && llmResult.confidence !== null)
+              ? llmResult.confidence
+              : (llmResult.confidence_score !== undefined ? llmResult.confidence_score : 0);
+
+            const normalised = 50 + (rawScoreVal / 2);
             
             // sourceQuality — from the sourceQuality map, distinct sources clamped to 1-3
             const numSources = Math.max(1, Math.min(3, stock.news.distinctSources || 1));
@@ -1629,16 +2258,42 @@ function computeRiskScoreAndFinal(portfolioState) {
             }
 
             // confidence — max(minConfidenceFloor, aiConfidence / 100)
-            const aiConfFraction = (llmResult.confidence || 0) / 100;
-            const confidence = Math.max(CONFIG.sentimentFactors.minConfidenceFloor, aiConfFraction);
+            const aiConfFraction = (confidenceVal || 0) / 100;
+            const confidenceFactor = Math.max(CONFIG.sentimentFactors.minConfidenceFloor, aiConfFraction);
             
-            let adjusted = 50 + (normalised - 50) * sourceQuality * recency * confidence;
+            let adjusted = 50 + (normalised - 50) * sourceQuality * recency * confidenceFactor;
             adjusted = Math.max(0, Math.min(100, adjusted));
+
+            const topKeys = llmResult.topLevelKeys || Object.keys(llmResult);
+            const hasScoreKey = topKeys.includes('sentiment_score');
+            const hasConfKey = topKeys.includes('confidence');
+            let keyMatchMsg = "";
+            if (hasScoreKey && hasConfKey) {
+              if (rawScoreVal === 0) {
+                keyMatchMsg = "KEYS MATCH — MODEL RETURNED ZERO";
+              } else {
+                keyMatchMsg = `KEYS MATCH — SCORE: ${rawScoreVal}`;
+              }
+            } else {
+              keyMatchMsg = `MISMATCH CORRECTED — Read before: [sentiment_score, confidence] | Read now: [${hasScoreKey ? 'sentiment_score' : 'score'}, ${hasConfKey ? 'confidence' : 'confidence_score'}]`;
+            }
+
+            let rationaleMsg = "";
+            if (!llmResult.rationale || llmResult.rationale.trim() === "") {
+              rationaleMsg = "Response rationale was empty string (Response valid, rationale empty)";
+            } else {
+              rationaleMsg = llmResult.rationale;
+            }
 
             stock.components.sentiment = adjusted;
             stock.sentimentData = {
-              rawScore: llmResult.sentiment_score,
-              aiConfidence: llmResult.confidence,
+              rawScore: rawScoreVal,
+              confidence: confidenceVal,
+              aiConfidence: confidenceVal,
+              sourceQuality: sourceQuality,
+              recency: recency,
+              confidenceFactor: confidenceFactor,
+              headlinesUsed: stock.news.headlines ? stock.news.headlines.length : 0,
               rationale: llmResult.rationale,
               articleIds: llmResult.article_ids || [],
               available: true,
@@ -1650,7 +2305,11 @@ function computeRiskScoreAndFinal(portfolioState) {
               promptCharCount: diag.promptCharCount,
               droppedAsDuplicates: processed.droppedAsDuplicates,
               droppedByTruncation: processed.droppedByTruncation,
-              diagnostics: diag
+              diagnostics: diag,
+              rawResponseText: llmResult.rawResponseText,
+              topLevelKeys: topKeys,
+              keyMatchStatus: keyMatchMsg,
+              rationaleStatus: rationaleMsg
             };
           } catch (e) {
             console.warn(`Sentiment failed for ${stock.ticker}:`, e);
@@ -1684,12 +2343,21 @@ function computeRiskScoreAndFinal(portfolioState) {
         runExecutablePositionSizingPipeline(portfolioState);
 
         if (progressEl) {
-          progressEl.textContent = 'Analysis price fetch and scoring complete! (21 / 21)';
+          progressEl.textContent = `Analysis price fetch and scoring complete! (${totalTasks} / ${totalTasks})`;
         }
         renderStocksStatus();
+        renderExecutionFeasibility();
+        renderScoreAndConstraintTable();
+        renderWeightsChart();
+        renderProposedTrades();
+        renderCorrelationHeatmap();
+        renderWarningsAndBlocks();
         renderQualificationSummary();
         renderMethodComparisonAndSizing();
         renderExecutablePortfolio();
+
+        // Automatically generate Executive Summary as part of run output
+        await generateExecutiveSummaryAuto();
 
       } catch (e) {
         console.error("Analysis execution error:", e);
@@ -1790,6 +2458,11 @@ function computeRiskScoreAndFinal(portfolioState) {
 
     const threshold = CONFIG.qualityGate[stock.bucket];
 
+    const errStr = (fundamentals && fundamentals.errorMessage) ||
+                   (fundamentals && fundamentals.earlyReturnReason) ||
+                   (fundamentals && fundamentals.errorReason) ||
+                   (!available && missing.length > 0 ? `Missing metrics (${missing.join(', ')})` : null);
+
     stock.quality = {
         score,
         missing,
@@ -1798,7 +2471,8 @@ function computeRiskScoreAndFinal(portfolioState) {
         debtScore,
         threshold: threshold,
         available: available,
-        passed: false
+        passed: false,
+        errorMessage: errStr
     };
 
     if (fundamentals) {
@@ -2021,7 +2695,7 @@ function computeRiskScoreAndFinal(portfolioState) {
         const w = {
           ticker: stock.ticker,
           rule: 'High Volatility',
-          detail: `Annualised volatility ${(stock.indicators.annualisedVol * 100).toFixed(1)}% exceeds 40%`
+          detail: `Annualised volatility ${(stock.indicators.annualisedVol * 100).toFixed(1)}% (${CONFIG.indicators.volLookback}-day) exceeds 40%`
         };
         stock.warnings.push(w);
         portfolioState.warnings.push(w);
@@ -2174,7 +2848,90 @@ function computeRiskScoreAndFinal(portfolioState) {
     }
   }
 
-  // --- PORTFOLIO COMPARISON COMPUTATION (A6.7 / PROMPT 10) ---
+  // --- PORTFOLIO COMPARISON COMPUTATION (A6.7 / PROMPTS 10 & 13-H) ---
+  function computeConstrainedPositionsForMethod(portfolioState, mKey) {
+    const targetVal = portfolioState.capital.targetPortfolioValue || portfolioState.capital.investable || 500000;
+    const maxExecDays = Number(portfolioState.inputs.maxExecutionDays || 5);
+
+    const currentDesiredMap = new Map();
+    portfolioState.stocks.forEach(s => {
+      const isEligible = (s.status === 'qualified' || s.status === 'qualified-below-minimum');
+      if (isEligible) {
+        const bAmt = portfolioState.buckets[s.bucket]?.amount || (targetVal * (CONFIG.universe[s.bucket]?.weight || 0.25));
+        const w = s.weights ? (s.weights[mKey] || 0) : 0;
+        currentDesiredMap.set(s.ticker, bAmt * w);
+      } else {
+        currentDesiredMap.set(s.ticker, 0);
+      }
+    });
+
+    const execUsdMap = new Map();
+    let maxIterations = 25;
+    let iteration = 0;
+    let stable = false;
+
+    while (!stable && iteration < maxIterations) {
+      iteration++;
+      let maxChange = 0;
+
+      const bucketDeployedMap = new Map();
+      for (const bKey of Object.keys(CONFIG.universe)) {
+        bucketDeployedMap.set(bKey, 0);
+      }
+
+      portfolioState.stocks.filter(s => s.status === 'qualified' || s.status === 'qualified-below-minimum').forEach(s => {
+        const bAmt = portfolioState.buckets[s.bucket]?.amount || (targetVal * (CONFIG.universe[s.bucket]?.weight || 0.25));
+        const curDesired = currentDesiredMap.get(s.ticker) || 0;
+        const res = computeExecutablePosition(s, curDesired, targetVal, bAmt, maxExecDays);
+        let execUsd = res.executablePositionUsd;
+
+        const minMeaningfulUsd = targetVal * CONFIG.minMeaningfulPosition;
+        if (execUsd > 0 && execUsd < minMeaningfulUsd) {
+          execUsd = 0;
+        }
+
+        const prevExec = execUsdMap.get(s.ticker) || 0;
+        const change = Math.abs(prevExec - execUsd);
+        if (change > maxChange) maxChange = change;
+
+        execUsdMap.set(s.ticker, execUsd);
+        bucketDeployedMap.set(s.bucket, (bucketDeployedMap.get(s.bucket) || 0) + execUsd);
+      });
+
+      if (maxChange < 0.01) {
+        stable = true;
+        break;
+      }
+
+      for (const bKey of Object.keys(CONFIG.universe)) {
+        const bAmt = portfolioState.buckets[bKey]?.amount || (targetVal * (CONFIG.universe[bKey]?.weight || 0.25));
+        const bQualifiers = portfolioState.stocks.filter(s => (s.status === 'qualified' || s.status === 'qualified-below-minimum') && s.bucket === bKey);
+
+        const unconstrainedQualifiers = bQualifiers.filter(s => {
+          const curDesired = currentDesiredMap.get(s.ticker) || 0;
+          const curExec = execUsdMap.get(s.ticker) || 0;
+          const testRes = computeExecutablePosition(s, curDesired + 1000, targetVal, bAmt, maxExecDays);
+          return testRes.executablePositionUsd > curExec;
+        });
+
+        const deployedInBucket = bucketDeployedMap.get(bKey) || 0;
+        const undeployedInBucket = Math.max(0, bAmt - deployedInBucket);
+
+        if (undeployedInBucket > 0.01 && unconstrainedQualifiers.length > 0) {
+          const weightSum = unconstrainedQualifiers.reduce((sum, s) => sum + (s.weights ? (s.weights[mKey] || 0) : 0), 0);
+          if (weightSum > 0) {
+            unconstrainedQualifiers.forEach(s => {
+              const addUsd = undeployedInBucket * ((s.weights ? (s.weights[mKey] || 0) : 0) / weightSum);
+              currentDesiredMap.set(s.ticker, (currentDesiredMap.get(s.ticker) || 0) + addUsd);
+            });
+          }
+        }
+      }
+    }
+
+    return execUsdMap;
+  }
+
   function computePortfolioComparison(portfolioState) {
     const targetVal = portfolioState.capital.targetPortfolioValue || portfolioState.capital.investable || 500000;
     const methods = ["inverseVolatility", "scoreProportional", "equalWeight"];
@@ -2208,42 +2965,84 @@ function computeRiskScoreAndFinal(portfolioState) {
     const T = commonDates.length;
 
     for (const method of methods) {
+      const execUsdMap = computeConstrainedPositionsForMethod(portfolioState, method);
+
+      let sumFinalWeight = 0;
       let hhi = 0;
-      const stockPortfolioWeights = new Map();
+      const finalWeights = new Map();
+      const preWeights = new Map();
 
       for (const s of portfolioState.stocks) {
+        const posUsd = execUsdMap.get(s.ticker) || 0;
+        const finalWeight = targetVal > 0 ? (posUsd / targetVal) : 0;
+        finalWeights.set(s.ticker, finalWeight);
+        sumFinalWeight += finalWeight;
+        hhi += Math.pow(finalWeight, 2);
+
+        // Pre-constraint weight
         const bucketAmt = portfolioState.buckets[s.bucket] ? portfolioState.buckets[s.bucket].amount : 0;
         const withinBucketWeight = s.weights ? (s.weights[method] || 0) : 0;
-        const posUsd = bucketAmt * withinBucketWeight;
-        const portWeight = targetVal > 0 ? (posUsd / targetVal) : 0;
-
-        stockPortfolioWeights.set(s.ticker, portWeight);
-        hhi += Math.pow(portWeight, 2);
+        const prePosUsd = bucketAmt * withinBucketWeight;
+        const preWeight = targetVal > 0 ? (prePosUsd / targetVal) : 0;
+        preWeights.set(s.ticker, preWeight);
       }
 
-      let annVol = 0;
+      // Renormalised Equity Sleeve Weights
+      const sleeveWeights = new Map();
+      for (const s of portfolioState.stocks) {
+        const fw = finalWeights.get(s.ticker) || 0;
+        sleeveWeights.set(s.ticker, sumFinalWeight > 0 ? (fw / sumFinalWeight) : 0);
+      }
+
+      let annVolTotal = 0;
+      let annVolSleeve = 0;
+      let annVolPre = 0;
+
       if (T >= 2) {
-        const portfolioDailyReturns = [];
+        const totalDailyReturns = [];
+        const sleeveDailyReturns = [];
+        const preDailyReturns = [];
+
         for (const dStr of commonDates) {
-          let pRet = 0;
+          let pRetTotal = 0;
+          let pRetSleeve = 0;
+          let pRetPre = 0;
+
           for (const s of validStocks) {
-            const w = stockPortfolioWeights.get(s.ticker) || 0;
-            if (w > 0) {
-              const stockMap = returnsByStockAndDate.get(s.ticker);
-              const r = stockMap ? (stockMap.get(dStr) || 0) : 0;
-              pRet += w * r;
-            }
+            const stockMap = returnsByStockAndDate.get(s.ticker);
+            const r = stockMap ? (stockMap.get(dStr) || 0) : 0;
+
+            const wTotal = finalWeights.get(s.ticker) || 0;
+            if (wTotal > 0) pRetTotal += wTotal * r;
+
+            const wSleeve = sleeveWeights.get(s.ticker) || 0;
+            if (wSleeve > 0) pRetSleeve += wSleeve * r;
+
+            const wPre = preWeights.get(s.ticker) || 0;
+            if (wPre > 0) pRetPre += wPre * r;
           }
-          portfolioDailyReturns.push(pRet);
+
+          totalDailyReturns.push(pRetTotal);
+          sleeveDailyReturns.push(pRetSleeve);
+          preDailyReturns.push(pRetPre);
         }
 
-        const meanRet = portfolioDailyReturns.reduce((a, b) => a + b, 0) / T;
-        const variance = portfolioDailyReturns.reduce((sum, r) => sum + Math.pow(r - meanRet, 2), 0) / (T - 1);
-        annVol = Math.sqrt(variance) * Math.sqrt(252);
+        const calcAnnVol = (rets) => {
+          const mean = rets.reduce((a, b) => a + b, 0) / T;
+          const variance = rets.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / (T - 1);
+          return Math.sqrt(variance) * Math.sqrt(252);
+        };
+
+        annVolTotal = calcAnnVol(totalDailyReturns);
+        annVolSleeve = calcAnnVol(sleeveDailyReturns);
+        annVolPre = calcAnnVol(preDailyReturns);
       }
 
       portfolioState.comparison[method] = {
-        vol: annVol,
+        volTotal: annVolTotal,
+        volSleeve: annVolSleeve,
+        volPre: annVolPre,
+        vol: annVolTotal,
         concentration: hhi
       };
     }
@@ -2274,23 +3073,30 @@ function computeRiskScoreAndFinal(portfolioState) {
     let compHtml = `
       <div style="background: var(--surface); padding: 1rem; border: 1px solid var(--line); border-radius: 4px;">
         <h3 style="margin-top: 0; font-size: 1rem; color: var(--ink);">Portfolio Comparison Across Weighting Methods</h3>
+        <p style="font-size: 0.8rem; color: #555; margin-bottom: 0.75rem;">
+          All three weighting methods are evaluated after passing through the identical execution constraint pipeline (per-stock cap, bucket cap, liquidity cap, ADV cap, minimum position size rule, and cash reserve).
+        </p>
         <div class="table-scroll-container">
           <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: right;">
             <thead>
               <tr style="border-bottom: 2px solid var(--ink); background: var(--surface);">
-                <th class="sticky-col" style="text-align: left; padding: 4px 6px;">Weighting Method</th>
-                <th class="num-cell" style="padding: 4px 6px;">Ann. Portfolio Volatility</th>
-                <th class="num-cell" style="padding: 4px 6px;">Concentration (HHI)</th>
-                <th style="text-align: center; padding: 4px 6px;">Status</th>
+                <th class="sticky-col" style="text-align: left; padding: 6px;">Weighting Method</th>
+                <th class="num-cell" style="padding: 6px;" title="Includes cash as 0% volatility asset">Total Portfolio Volatility (Constrained, Cash=0%)</th>
+                <th class="num-cell" style="padding: 6px;" title="Weights renormalised to sum to 100% equity">Equity Sleeve Volatility (Constrained, Renormalised 100%)</th>
+                <th class="num-cell" style="padding: 6px;" title="Target weights before constraints">Pre-Constraint Volatility (Old)</th>
+                <th class="num-cell" style="padding: 6px;">Concentration (HHI)</th>
+                <th style="text-align: center; padding: 6px;">Status</th>
               </tr>
             </thead>
             <tbody>
     `;
 
     for (const mKey of ["inverseVolatility", "scoreProportional", "equalWeight"]) {
-      const comp = portfolioState.comparison[mKey] || { vol: 0, concentration: 0 };
+      const comp = portfolioState.comparison[mKey] || { volTotal: 0, volSleeve: 0, volPre: 0, concentration: 0 };
       const isActive = mKey === currentMethod;
-      const volStr = comp.vol > 0 ? `${(comp.vol * 100).toFixed(2)}%` : 'N/A';
+      const volTotalStr = comp.volTotal > 0 ? `${(comp.volTotal * 100).toFixed(2)}% (${CONFIG.indicators.volLookback}-day)` : 'N/A';
+      const volSleeveStr = comp.volSleeve > 0 ? `${(comp.volSleeve * 100).toFixed(2)}% (${CONFIG.indicators.volLookback}-day)` : 'N/A';
+      const volPreStr = comp.volPre > 0 ? `${(comp.volPre * 100).toFixed(2)}%` : 'N/A';
       const hhiStr = comp.concentration > 0 ? `${comp.concentration.toFixed(4)} (${(comp.concentration * 100).toFixed(2)}%)` : 'N/A';
       const statusBadge = isActive 
         ? `<span style="background: #2e7d32; color: white; padding: 2px 8px; border-radius: 3px; font-weight: bold; font-size: 0.75rem;">ACTIVE (APPLIED)</span>`
@@ -2298,10 +3104,12 @@ function computeRiskScoreAndFinal(portfolioState) {
 
       compHtml += `
         <tr class="${isActive ? 'active-method-row' : ''}" style="${isActive ? 'background: #e8f5e9; font-weight: bold;' : ''}">
-          <td class="sticky-col" style="text-align: left; padding: 4px 6px;">${methodLabels[mKey]}</td>
-          <td class="num-cell" style="padding: 4px 6px;">${volStr}</td>
-          <td class="num-cell" style="padding: 4px 6px;">${hhiStr}</td>
-          <td style="text-align: center; padding: 4px 6px;">${statusBadge}</td>
+          <td class="sticky-col" style="text-align: left; padding: 6px;">${methodLabels[mKey]}</td>
+          <td class="num-cell" style="padding: 6px; color: #2e7d32; font-weight: bold;">${volTotalStr}</td>
+          <td class="num-cell" style="padding: 6px; color: #0284c7; font-weight: bold;">${volSleeveStr}</td>
+          <td class="num-cell" style="padding: 6px; color: #666;">${volPreStr}</td>
+          <td class="num-cell" style="padding: 6px;">${hhiStr}</td>
+          <td style="text-align: center; padding: 6px;">${statusBadge}</td>
         </tr>
       `;
     }
@@ -2385,10 +3193,10 @@ function computeRiskScoreAndFinal(portfolioState) {
 
           posHtml += `
             <tr class="${isQ ? '' : 'unqualified-row'}" style="${isQ ? '' : 'opacity: 0.5; background: #f9f9f9;'} border-bottom: 1px solid #eee;">
-              <td class="sticky-col" style="text-align: left; padding: 4px 6px;"><strong>${s.ticker}</strong></td>
+              <td class="sticky-col" style="text-align: left; padding: 4px 6px;"><strong>${s.ticker}</strong>${s.isAdded ? ` <span style="background: #e0f2fe; color: #0369a1; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; font-weight: bold; border: 1px solid #bae6fd; margin-left: 0.25rem;">added</span>` : ''}</td>
               <td style="text-align: left; padding: 4px 6px;">${isQ ? '<span style="color: #2e7d32; font-weight: bold;">qualified</span>' : `<span style="color: #c62828;">${s.status}</span>`}</td>
               <td class="num-cell" style="padding: 4px 6px;">${s.finalScore ? s.finalScore.toFixed(1) : '&mdash;'}</td>
-              <td class="num-cell" style="padding: 4px 6px;">${s.indicators && s.indicators.annualisedVol ? (s.indicators.annualisedVol * 100).toFixed(1) + '%' : '&mdash;'}</td>
+              <td class="num-cell" style="padding: 4px 6px;">${s.indicators && s.indicators.annualisedVol ? (s.indicators.annualisedVol * 100).toFixed(1) + `% (${CONFIG.indicators.volLookback}-day)` : '&mdash;'}</td>
               <td class="num-cell" style="padding: 4px 6px;">${invVolWtStr}</td>
               <td class="num-cell toggle-weight-col" style="padding: 4px 6px;">${scorePropWtStr}</td>
               <td class="num-cell toggle-weight-col" style="padding: 4px 6px;">${eqWtStr}</td>
@@ -2785,6 +3593,17 @@ function computeRiskScoreAndFinal(portfolioState) {
       }
     }
 
+    // Step 3.5: Identify qualified stocks whose final position is zeroed out by constraints (Prompt 13-H Requirement 5)
+    const minMeaningfulUsd = targetVal * CONFIG.minMeaningfulPosition;
+    portfolioState.stocks.forEach(s => {
+      if ((s.status === 'qualified' || s.status === 'qualified-below-minimum') && (s.executablePositionUsd || 0) <= 0) {
+        s.status = 'qualified-below-minimum';
+        s.bindingConstraint = s.bindingConstraint || `Minimum Position Size Rule (< 2.0% of portfolio value, $${minMeaningfulUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} threshold)`;
+        s.zeroRule = "Minimum Position Size Rule (< 2.0% of portfolio value)";
+        s.zeroThreshold = `$${minMeaningfulUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (2.0% of portfolio value)`;
+      }
+    });
+
     // 4. Calculate Target Shares, Trade Proposals & Side Assignment (A6.8, A6.12)
     let totalEstimatedCost = 0;
     let grossPurchases = 0;
@@ -2846,8 +3665,8 @@ function computeRiskScoreAndFinal(portfolioState) {
       s.incrementalShares = rawTradeQuantity;
       s.incrementalNotionalUsd = rawTradeQuantity * price;
 
-      // 3) Side Assignment: BUY, SELL, HOLD, BLOCKED, MANUAL REVIEW, INSUFFICIENT DATA
-      let side = 'HOLD';
+      // 3) Side Assignment: BUY, SELL, HOLD, NO ACTION, BLOCKED, MANUAL REVIEW, INSUFFICIENT DATA
+      let side = 'NO ACTION';
       const tier = s.liquidity?.tier || "Liquid";
       const isIlliquidTier = (s.status === 'excluded-liquidity' || tier === 'Illiquid' || s.liquidity?.treatment === 'reject');
 
@@ -2855,11 +3674,12 @@ function computeRiskScoreAndFinal(portfolioState) {
         if (tradeNotional >= toleranceThresholdUsd) {
           side = 'BLOCKED';
         } else {
-          side = 'HOLD';
+          side = existingShares > 0 ? 'HOLD' : 'NO ACTION';
         }
       } else if (tradeNotional < toleranceThresholdUsd || Math.abs(rawTradeQuantity) < 1e-6) {
-        // Immaterial trades within CONFIG.rebalanceTolerancePct become HOLD
-        side = 'HOLD';
+        // Immaterial trades within CONFIG.rebalanceTolerancePct
+        // Reserve HOLD for positions actually held that fall inside the rebalance tolerance; otherwise NO ACTION
+        side = existingShares > 0 ? 'HOLD' : 'NO ACTION';
       } else {
         // Material trade >= toleranceThresholdUsd
         if (tier === "Moderate" || tier === "Low") {
@@ -2876,7 +3696,7 @@ function computeRiskScoreAndFinal(portfolioState) {
 
       s.side = side;
 
-      if (side === 'HOLD' || side === 'BLOCKED' || side === 'INSUFFICIENT DATA') {
+      if (side === 'HOLD' || side === 'NO ACTION' || side === 'BLOCKED' || side === 'INSUFFICIENT DATA') {
         s.tradeQuantity = 0;
         s.orderNotionalUsd = 0;
         s.orderType = side.toLowerCase();
@@ -2908,7 +3728,7 @@ function computeRiskScoreAndFinal(portfolioState) {
       }
     });
 
-    // 5. Bucket Deployed / Undeployed Summary
+    // 5. Bucket Deployed / Undeployed Summary (sum actual whole-share values)
     let totalDeployed = 0;
     for (const bKey of Object.keys(CONFIG.universe)) {
       const bState = portfolioState.buckets[bKey];
@@ -2920,7 +3740,7 @@ function computeRiskScoreAndFinal(portfolioState) {
       } else {
         bState.deployed = portfolioState.stocks
           .filter(s => s.bucket === bKey)
-          .reduce((sum, s) => sum + (s.executablePositionUsd || 0), 0);
+          .reduce((sum, s) => sum + ((s.targetShares || 0) * (s.price || 0)), 0);
         bState.undeployed = Math.max(0, bState.amount - bState.deployed);
       }
 
@@ -2939,7 +3759,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     portfolioState.capital.unspentResidualCashTotal = unspentResidualCashTotal;
 
     const baseUndeployed = Math.max(0, targetVal - totalDeployed);
-    portfolioState.capital.undeployed = baseUndeployed + (feeReserveVariance > 0 ? feeReserveVariance : 0) + unspentResidualCashTotal;
+    portfolioState.capital.undeployed = baseUndeployed + (feeReserveVariance > 0 ? feeReserveVariance : 0);
 
     // Settled Cash Calculation & Verification
     const existingPortfolioVal = portfolioState.capital.existingValue || 0;
@@ -2955,6 +3775,708 @@ function computeRiskScoreAndFinal(portfolioState) {
 
     // 7. Assert Invariants (A10)
     assertInvariantsA10(portfolioState);
+  }
+
+  // --- CLEAR ALL OUTPUTS AT START OF RUN ---
+  function clearAllOutputs() {
+    const ids = [
+      'stocks-data-list',
+      'execution-feasibility-container',
+      'score-constraint-container',
+      'proposed-trades-container',
+      'correlation-heatmap-container',
+      'warnings-blocks-container',
+      'method-comparison-container',
+      'desired-positions-container',
+      'executable-summary-container',
+      'executable-positions-container',
+      'qualification-summary-content',
+      'quality-summary-content',
+      'volatility-integrity-diagnostic-content',
+      'diag-table-body',
+      'liquidity-debug-table-body'
+    ];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = '';
+    });
+
+    const execSummaryContainer = document.getElementById('executive-summary-container');
+    if (execSummaryContainer) {
+      execSummaryContainer.innerHTML = '<p class="placeholder">Run analysis to generate Executive Summary.</p>';
+    }
+
+    if (window.weightsChartInstance) {
+      window.weightsChartInstance.destroy();
+      window.weightsChartInstance = null;
+    }
+  }
+
+  // --- EXPLAIN STOCK (A6.15) ---
+  function explainStock(stock) {
+    if (!stock) return '';
+    if (stock.status === 'data-error') {
+      return `${stock.ticker}: Analysis halted due to price or fundamentals fetch error.`;
+    }
+    
+    const score = stock.finalScore ? stock.finalScore.toFixed(1) : 'N/A';
+    const bucket = (stock.bucket || 'general').toUpperCase();
+
+    const comps = stock.components || {};
+    const items = [
+      { name: 'Trend', val: comps.trend || 0 },
+      { name: 'Momentum', val: comps.momentum || 0 },
+      { name: 'Risk', val: comps.risk || 0 },
+      { name: 'Volume', val: comps.volume || 0 },
+      { name: 'Sentiment', val: comps.sentiment || 0 }
+    ];
+
+    const contributors = items.filter(i => i.val >= 50).sort((a,b) => b.val - a.val).map(i => `${i.name} (${i.val.toFixed(1)})`);
+    const detractors = items.filter(i => i.val < 50).sort((a,b) => a.val - b.val).map(i => `${i.name} (${i.val.toFixed(1)})`);
+
+    if (stock.quality && stock.quality.dataQualityPenalty) {
+      detractors.push(`Missing Fundamentals Penalty (-20)`);
+    }
+
+    let binding = stock.bindingConstraint;
+    if (!binding) {
+      if (stock.status === 'excluded-quality') {
+        binding = `Quality Gate Rejection (Score ${stock.quality?.score?.toFixed(1) || '0'} < Threshold ${stock.quality?.threshold || '0'})`;
+      } else if (stock.status === 'excluded-trend') {
+        binding = `Downtrend Filter (Price below SMA50 & SMA200)`;
+      } else if (stock.status === 'excluded-liquidity') {
+        binding = `Liquidity Exclusion (Illiquid Tier ADTV < $10M)`;
+      } else if (stock.status === 'qualified') {
+        binding = `Unconstrained Model Allocation`;
+      } else {
+        binding = `Not Qualified`;
+      }
+    }
+
+    const contribStr = contributors.length > 0 ? contributors.slice(0,3).join(', ') : 'None';
+    const detractStr = detractors.length > 0 ? detractors.slice(0,3).join(', ') : 'None';
+
+    return `${stock.ticker} (${bucket}): Final Score ${score}/100. Top Contributors: ${contribStr}. Main Detractors: ${detractStr}. Binding Constraint: ${binding}.`;
+  }
+
+  // --- STATUS BADGE HELPERS PER A8 & PROMPT 13-J ---
+  function formatStatusBadge(stockOrStatus) {
+    const status = typeof stockOrStatus === 'string' 
+      ? stockOrStatus 
+      : (stockOrStatus && stockOrStatus.status ? stockOrStatus.status : '');
+
+    if (status === 'qualified') {
+      return `<span style="color: #1b5e20; background: #e8f5e9; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #c8e6c9; white-space: nowrap;">✅ Qualified</span>`;
+    } else if (status === 'excluded-score') {
+      return `<span style="color: #b45309; background: #fffbeb; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #fde68a; white-space: nowrap;">Below Threshold</span>`;
+    } else if (status === 'excluded-downtrend' || status === 'excluded-trend') {
+      return `<span style="color: #b45309; background: #fffbeb; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #fde68a; white-space: nowrap;">Downtrend Block</span>`;
+    } else if (status === 'excluded-quality') {
+      return `<span style="color: #b45309; background: #fffbeb; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #fde68a; white-space: nowrap;">Quality Fail</span>`;
+    } else if (status === 'qualified-below-minimum') {
+      return `<span style="color: #4b5563; background: #f3f4f6; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #e5e7eb; white-space: nowrap;">Below Min Size</span>`;
+    } else if (status === 'data-error') {
+      return `<span style="color: #b71c1c; background: #ffebee; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #ffcdd2; white-space: nowrap;">⛔ Data Error</span>`;
+    } else if (status) {
+      return `<span style="color: #4b5563; background: #f3f4f6; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #e5e7eb; white-space: nowrap;">${escapeHtml(status)}</span>`;
+    } else {
+      return `<span style="color: #4b5563; background: #f3f4f6; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #e5e7eb; white-space: nowrap;">N/A</span>`;
+    }
+  }
+
+  function formatSideBadge(side) {
+    if (side === 'BUY') {
+      return `<span style="color: #1b5e20; background: #e8f5e9; padding: 0.15rem 0.4rem; border-radius: 3px; font-weight: bold; border: 1px solid #c8e6c9; white-space: nowrap;">🟢 BUY</span>`;
+    } else if (side === 'SELL') {
+      return `<span style="color: #b71c1c; background: #ffebee; padding: 0.15rem 0.4rem; border-radius: 3px; font-weight: bold; border: 1px solid #ffcdd2; white-space: nowrap;">🔴 SELL</span>`;
+    } else if (side === 'HOLD') {
+      return `<span style="color: #0277bd; background: #e0f7fa; padding: 0.15rem 0.4rem; border-radius: 3px; font-weight: bold; border: 1px solid #b2ebf2; white-space: nowrap;">ℹ️ HOLD</span>`;
+    } else if (side === 'NO ACTION') {
+      return `<span style="color: #616161; background: #f5f5f5; padding: 0.15rem 0.4rem; border-radius: 3px; font-weight: bold; border: 1px solid #e0e0e0; white-space: nowrap;">⚪ NO ACTION</span>`;
+    } else if (side === 'BLOCKED') {
+      return `<span style="color: #b71c1c; background: #ffebee; padding: 0.15rem 0.4rem; border-radius: 3px; font-weight: bold; border: 1px solid #ffcdd2; white-space: nowrap;">⛔ BLOCKED</span>`;
+    } else {
+      return `<span style="color: #e65100; background: #fff3e0; padding: 0.15rem 0.4rem; border-radius: 3px; font-weight: bold; border: 1px solid #ffe0b2; white-space: nowrap;">⚠️ REVIEW</span>`;
+    }
+  }
+
+  // --- RENDER EXECUTION FEASIBILITY ---
+  function renderExecutionFeasibility() {
+    const container = document.getElementById('execution-feasibility-container');
+    if (!container) return;
+
+    const currency = portfolioState.inputs.currency || "USD";
+    const targetVal = portfolioState.capital.targetPortfolioValue || 472000;
+    const provReserve = portfolioState.capital.provisionalFeeReserve || 3000;
+    const actualCost = portfolioState.capital.estimatedActualCost || 0;
+    const feeVariance = portfolioState.capital.feeReserveVariance || 0;
+    const undeployedTotal = portfolioState.capital.undeployed || 0;
+
+    let immediateCount = 0;
+    let immediateValue = 0;
+    let stagedCount = 0;
+    let stagedValue = 0;
+    let maxDaysNeeded = 0;
+    let blockedCount = 0;
+    let blockedValue = 0;
+
+    portfolioState.stocks.forEach(s => {
+      const side = s.side || 'NO ACTION';
+      const notional = s.orderNotionalUsd || 0;
+      const days = s.requiredExecutionDays || 0;
+
+      if (side === 'BLOCKED') {
+        blockedCount++;
+        blockedValue += Math.abs(s.incrementalNotionalUsd || 0);
+      } else if (side === 'BUY' || side === 'SELL' || side === 'MANUAL REVIEW') {
+        if (days <= 1) {
+          immediateCount++;
+          immediateValue += notional;
+        } else {
+          stagedCount++;
+          stagedValue += notional;
+          if (days > maxDaysNeeded) maxDaysNeeded = days;
+        }
+      }
+    });
+
+    const isCostSurplus = feeVariance >= 0;
+    const costVarianceStr = isCostSurplus 
+      ? `Surplus of ${formatCurrency(feeVariance, currency)} returned to cash` 
+      : `Shortfall of ${formatCurrency(Math.abs(feeVariance), currency)} absorbed from cash`;
+
+    container.innerHTML = `
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem;">
+        <div style="background: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 6px; padding: 1rem;">
+          <div style="color: #2e7d32; font-size: 0.8rem; font-weight: bold; text-transform: uppercase;">✅ Executable Immediately</div>
+          <div style="font-size: 1.3rem; font-weight: bold; color: #1b5e20; margin-top: 0.25rem;">${formatCurrency(immediateValue, currency)}</div>
+          <div style="font-size: 0.85rem; color: #2e7d32; margin-top: 0.25rem;">${immediateCount} trade(s) requiring ≤ 1 trading day</div>
+        </div>
+
+        <div style="background: #fff3e0; border: 1px solid #ffe0b2; border-radius: 6px; padding: 1rem;">
+          <div style="color: #e65100; font-size: 0.8rem; font-weight: bold; text-transform: uppercase;">⚠️ Staged Execution Required</div>
+          <div style="font-size: 1.3rem; font-weight: bold; color: #e65100; margin-top: 0.25rem;">${formatCurrency(stagedValue, currency)}</div>
+          <div style="font-size: 0.85rem; color: #e65100; margin-top: 0.25rem;">${stagedCount} trade(s) requiring staged execution (Max: <strong>${maxDaysNeeded} days</strong>)</div>
+        </div>
+
+        <div style="background: #ffebee; border: 1px solid #ffcdd2; border-radius: 6px; padding: 1rem;">
+          <div style="color: #c62828; font-size: 0.8rem; font-weight: bold; text-transform: uppercase;">⛔ Blocked by Liquidity</div>
+          <div style="font-size: 1.3rem; font-weight: bold; color: #b71c1c; margin-top: 0.25rem;">${formatCurrency(blockedValue, currency)}</div>
+          <div style="font-size: 0.85rem; color: #c62828; margin-top: 0.25rem;">${blockedCount} trade proposal(s) blocked due to illiquidity</div>
+        </div>
+
+        <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem;">
+          <div style="color: #555; font-size: 0.8rem; font-weight: bold; text-transform: uppercase;">Estimated Transaction Cost</div>
+          <div style="font-size: 1.3rem; font-weight: bold; color: var(--ink); margin-top: 0.25rem;">${formatCurrency(actualCost, currency)}</div>
+          <div style="font-size: 0.8rem; color: #666; margin-top: 0.25rem;" title="assumed by liquidity tier">
+            Prov. Reserve: ${formatCurrency(provReserve, currency)} (${costVarianceStr})
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top: 1rem; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 6px; padding: 0.85rem;">
+        <div style="font-weight: bold; font-size: 0.85rem; color: #333;">Undeployed Capital Reason Breakdown</div>
+        <div style="font-size: 0.85rem; color: #555; margin-top: 0.3rem;">
+          Total Undeployed Cash: <strong style="color: #856404;">${formatCurrency(undeployedTotal, currency)}</strong> &mdash; 
+          Reasons: Unallocated bucket funds / disqualified names (${formatCurrency(Math.max(0, targetVal - portfolioState.capital.deployed), currency)}), 
+          Whole-share rounding cash (${formatCurrency(portfolioState.capital.unspentResidualCashTotal || 0, currency)}), 
+          Fee reserve surplus (${formatCurrency(Math.max(0, feeVariance), currency)}).
+        </div>
+      </div>
+    `;
+  }
+
+  // --- RENDER SCORE & CONSTRAINT TABLE ---
+  function renderScoreAndConstraintTable() {
+    const container = document.getElementById('score-constraint-container');
+    if (!container) return;
+
+    const currency = portfolioState.inputs.currency || "USD";
+    const targetVal = portfolioState.capital.targetPortfolioValue || 472000;
+
+    let html = '';
+
+    for (const [bucketKey, bucketObj] of Object.entries(CONFIG.universe)) {
+      const bucketStocks = portfolioState.stocks.filter(s => s.bucket === bucketKey);
+      const bState = portfolioState.buckets[bucketKey] || {};
+      const bucketWeightPct = ((bState.finalWeight || 0) * 100).toFixed(1);
+
+      html += `
+        <div style="margin-bottom: 1.5rem; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--ink); padding-bottom: 0.5rem; margin-bottom: 0.75rem;">
+            <h3 style="margin: 0; font-size: 1.05rem; color: var(--ink);">${bucketObj.label} (${bucketKey.toUpperCase()})</h3>
+            <span style="font-weight: bold; font-family: monospace; font-size: 0.9rem; background: #f4f3ef; padding: 0.2rem 0.6rem; border-radius: 4px; border: 1px solid var(--line);">
+              Strategic Weight: ${bucketWeightPct}% | Deployed: ${formatCurrency(bState.deployed || 0, currency)}
+            </span>
+          </div>
+
+          <div class="table-scroll-container">
+            <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right;">
+              <thead>
+                <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
+                  <th class="sticky-col" style="text-align: left; padding: 6px;">Ticker</th>
+                  <th style="text-align: left; padding: 6px;">Status</th>
+                  <th class="num-cell" style="padding: 6px;" title="Weighted 5-component final score (0-100)">Final Score</th>
+                  <th class="num-cell" style="padding: 6px;" title="Annualised Volatility & Risk Score">Volatility / Risk</th>
+                  <th class="num-cell" style="padding: 6px;" title="Quality Gate Score vs Bucket Threshold">Quality Gate</th>
+                  <th class="num-cell" style="padding: 6px;" title="Model allocation weight before caps">Model Weight</th>
+                  <th class="num-cell" style="padding: 6px;" title="Final executable allocation weight after caps">Executable Weight</th>
+                  <th style="text-align: left; padding: 6px;" title="Binding constraint limiting position size">Binding Constraint</th>
+                  <th style="text-align: center; padding: 6px;">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+      `;
+
+      bucketStocks.forEach(s => {
+        const isQ = s.status === 'qualified';
+        const modelW = targetVal > 0 ? ((s.desiredPositionUsd || 0) / targetVal) * 100 : 0;
+        const execW = targetVal > 0 ? ((s.executablePositionUsd || 0) / targetVal) * 100 : 0;
+
+        const rowStyle = isQ ? '' : 'opacity: 0.65; background: #f9f9f9;';
+        const statusBadge = formatStatusBadge(s);
+        const bindingStr = s.bindingConstraint || (isQ ? 'Unconstrained' : 'Not Qualified');
+
+        html += `
+          <tr style="${rowStyle} border-bottom: 1px solid #eee;">
+            <td class="sticky-col" style="text-align: left; padding: 6px;">
+              <strong>${s.ticker}</strong>${s.isAdded ? ` <span style="background: #e0f2fe; color: #0369a1; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; font-weight: bold; border: 1px solid #bae6fd; margin-left: 0.25rem;">added</span>` : ''}
+            </td>
+            <td style="text-align: left; padding: 6px;">${statusBadge}</td>
+            <td class="num-cell" style="padding: 6px; font-weight: bold;">${s.finalScore ? s.finalScore.toFixed(1) : '&mdash;'}</td>
+            <td class="num-cell" style="padding: 6px;">${s.indicators?.annualisedVol ? (s.indicators.annualisedVol * 100).toFixed(1) + `% (${CONFIG.indicators.volLookback}-day)` : '&mdash;'} (${s.components?.risk?.toFixed(1) || '0'})</td>
+            <td class="num-cell" style="padding: 6px;">${s.quality?.score ? s.quality.score.toFixed(1) : '&mdash;'} / ${s.quality?.threshold || 0}</td>
+            <td class="num-cell" style="padding: 6px;">${modelW.toFixed(2)}%</td>
+            <td class="num-cell" style="padding: 6px; font-weight: bold; color: ${isQ ? '#2e7d32' : '#666'};">${execW.toFixed(2)}%</td>
+            <td style="text-align: left; padding: 6px; font-size: 0.75rem; color: #333;"><strong>${bindingStr}</strong></td>
+            <td style="text-align: center; padding: 6px;">
+              <button type="button" class="toggle-expand-btn" data-ticker="${s.ticker}" style="font-size: 0.75rem; padding: 0.2rem 0.5rem; margin: 0; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 3px;">
+                [+] Details
+              </button>
+            </td>
+          </tr>
+
+          <!-- ROW EXPANSION DETAIL CARD -->
+          <tr id="expand-row-${s.ticker}" style="display: none; background: #fafafa;">
+            <td colspan="9" style="padding: 1rem; text-align: left;">
+              <div style="background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 1rem; display: grid; gap: 1rem;">
+                
+                <!-- 1. Explanation Sentence -->
+                <div style="background: #e0f2fe; border-left: 4px solid #0284c7; padding: 0.6rem 0.8rem; border-radius: 0 4px 4px 0; font-size: 0.85rem; color: #0369a1;">
+                  <strong>Explanation:</strong> ${explainStock(s)}
+                </div>
+
+                <!-- 2. FULL CONSTRAINT LADDER -->
+                <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.85rem;">
+                  <h4 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; color: #111827; text-transform: uppercase;">Full Constraint Ladder (Binding Step Highlighted)</h4>
+                  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.5rem; font-family: monospace; font-size: 0.8rem;">
+                    <div style="padding: 0.4rem; background: #fff; border: 1px solid #e5e7eb; border-radius: 4px;">
+                      <div style="color: #6b7280; font-size: 0.7rem;">1. Model Allocation</div>
+                      <strong>${formatCurrency(s.desiredPositionUsd || 0, currency)}</strong>
+                    </div>
+                    <div style="padding: 0.4rem; background: ${s.bindingConstraint?.includes('10%') ? '#fef3c7' : '#fff'}; border: 1px solid ${s.bindingConstraint?.includes('10%') ? '#f59e0b' : '#e5e7eb'}; border-radius: 4px;">
+                      <div style="color: #6b7280; font-size: 0.7rem;">2. 10% Stock Cap</div>
+                      <strong>${formatCurrency(s.constraintLadder?.capped10Usd || s.desiredPositionUsd || 0, currency)}</strong>
+                    </div>
+                    <div style="padding: 0.4rem; background: ${s.bindingConstraint?.includes('35%') ? '#fef3c7' : '#fff'}; border: 1px solid ${s.bindingConstraint?.includes('35%') ? '#f59e0b' : '#e5e7eb'}; border-radius: 4px;">
+                      <div style="color: #6b7280; font-size: 0.7rem;">3. 35% Bucket Cap</div>
+                      <strong>${formatCurrency(s.constraintLadder?.capped35Usd || s.desiredPositionUsd || 0, currency)}</strong>
+                    </div>
+                    <div style="padding: 0.4rem; background: ${s.bindingConstraint?.includes('Liquidity') ? '#fef3c7' : '#fff'}; border: 1px solid ${s.bindingConstraint?.includes('Liquidity') ? '#f59e0b' : '#e5e7eb'}; border-radius: 4px;">
+                      <div style="color: #6b7280; font-size: 0.7rem;">4. Liquidity Cap</div>
+                      <strong>${formatCurrency(s.constraintLadder?.cappedLiquidityUsd || s.desiredPositionUsd || 0, currency)}</strong>
+                    </div>
+                    <div style="padding: 0.4rem; background: ${s.bindingConstraint?.includes('Days') ? '#fef3c7' : '#fff'}; border: 1px solid ${s.bindingConstraint?.includes('Days') ? '#f59e0b' : '#e5e7eb'}; border-radius: 4px;">
+                      <div style="color: #6b7280; font-size: 0.7rem;">5. Max Execution Days</div>
+                      <strong>${formatCurrency(s.constraintLadder?.cappedDaysUsd || s.desiredPositionUsd || 0, currency)}</strong>
+                    </div>
+                    <div style="padding: 0.4rem; background: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px;">
+                      <div style="color: #2e7d32; font-size: 0.7rem;">6. Whole Share Executable</div>
+                      <strong>${formatCurrency(s.executablePositionUsd || 0, currency)}</strong> (${s.targetShares || 0} sh)
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 3. Indicators & Component Breakdown -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; font-size: 0.8rem;">
+                  <div style="background: #f9f9f9; padding: 0.6rem; border-radius: 4px; border: 1px solid #eee;">
+                    <strong>Technical Components:</strong><br>
+                    Trend: ${s.components?.trend?.toFixed(1) || 0} (SMA50: $${s.indicators?.sma50?.toFixed(2) || '0'}, SMA200: $${s.indicators?.sma200?.toFixed(2) || '0'})<br>
+                    Momentum: ${s.components?.momentum?.toFixed(1) || 0} (RSI: ${s.indicators?.rsi14?.toFixed(1) || '0'}, MACD: ${s.indicators?.macdHistogram?.toFixed(2) || '0'})<br>
+                    Risk: ${s.components?.risk?.toFixed(1) || 0} (Vol: ${((s.indicators?.annualisedVol || 0)*100).toFixed(1)}% (${CONFIG.indicators.volLookback}-day), MaxDD: ${((s.indicators?.maxDrawdown || 0)*100).toFixed(1)}%)
+                  </div>
+
+                  <div style="background: #f9f9f9; padding: 0.6rem; border-radius: 4px; border: 1px solid #eee;">
+                    <strong>Fundamentals & Quality Gate:</strong><br>
+                    Rev Growth: ${((s.fundamentals?.revenueGrowth || 0)*100).toFixed(1)}% (Score: ${s.quality?.revScore?.toFixed(1) || 0})<br>
+                    ROE: ${((s.fundamentals?.roe || 0)*100).toFixed(1)}% (Score: ${s.quality?.roeScore?.toFixed(1) || 0})<br>
+                    Debt/Eq: ${s.fundamentals?.debtToEquity?.toFixed(2) || '0'} (Score: ${s.quality?.debtScore?.toFixed(1) || 0})<br>
+                    Quality Score: <strong>${s.quality?.score?.toFixed(1) || 0}</strong> vs Gate: <strong>${s.quality?.threshold || 0}</strong>
+                  </div>
+
+                  <div style="background: #f9f9f9; padding: 0.6rem; border-radius: 4px; border: 1px solid #eee;">
+                    <strong>News & Sentiment AI Rationale:</strong><br>
+                    LLM Score: <strong>${s.components?.sentiment?.toFixed(1) || 50}/100</strong><br>
+                    Rationale: <span style="color: #555;">${s.sentimentData?.llmAnalysis || s.sentimentData?.reason || 'No AI headline analysis available'}</span>
+                  </div>
+
+                  <div style="background: #f9f9f9; padding: 0.6rem; border-radius: 4px; border: 1px solid #eee;">
+                    <strong>Costs & Data Providers:</strong><br>
+                    Commission: $${s.cost?.commissionUsd?.toFixed(2) || '0.00'} | Tax: $${s.cost?.taxUsd?.toFixed(2) || '0.00'}<br>
+                    Spread: $${s.cost?.spreadUsd?.toFixed(2) || '0.00'} <span title="assumed by liquidity tier" style="color:#666;">(assumed by liquidity tier)</span><br>
+                    Providers: TwelveData [2026-08-30], FMP [2026-08-30], Finnhub [2026-08-30], OpenRouter [2026-08-30]
+                  </div>
+                </div>
+
+              </div>
+            </td>
+          </tr>
+        `;
+      });
+
+      html += `
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
+    container.innerHTML = html;
+
+    container.querySelectorAll('.toggle-expand-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const ticker = e.currentTarget.getAttribute('data-ticker');
+        const expandRow = document.getElementById(`expand-row-${ticker}`);
+        if (expandRow) {
+          const isHidden = expandRow.style.display === 'none';
+          expandRow.style.display = isHidden ? 'table-row' : 'none';
+          e.currentTarget.textContent = isHidden ? '[-] Collapse' : '[+] Details';
+        }
+      });
+    });
+  }
+
+  // --- RENDER WEIGHTS CHART (Chart.js) ---
+  function renderWeightsChart() {
+    const canvas = document.getElementById('weights-chart-canvas');
+    if (!canvas) return;
+
+    if (window.weightsChartInstance) {
+      window.weightsChartInstance.destroy();
+      window.weightsChartInstance = null;
+    }
+
+    const targetVal = portfolioState.capital.targetPortfolioValue || 472000;
+    const items = (portfolioState.stocks || [])
+      .map(s => {
+        const modelW = targetVal > 0 ? ((s.desiredPositionUsd || 0) / targetVal) * 100 : 0;
+        const execW = targetVal > 0 ? ((s.executablePositionUsd || 0) / targetVal) * 100 : 0;
+        return {
+          ticker: s.ticker,
+          bucket: s.bucket,
+          isAdded: s.isAdded,
+          modelW,
+          execW
+        };
+      })
+      .filter(i => i.modelW > 0 || i.execW > 0)
+      .sort((a, b) => b.modelW - a.modelW);
+
+    if (items.length === 0) {
+      canvas.parentNode.innerHTML = `<p class="placeholder">Run analysis to populate weights comparison chart.</p>`;
+      return;
+    }
+
+    const bucketColors = {
+      steady: { bg: 'rgba(37, 99, 235, 0.4)', border: 'rgb(37, 99, 235)', execBg: 'rgb(37, 99, 235)' },
+      growth: { bg: 'rgba(124, 58, 237, 0.4)', border: 'rgb(124, 58, 237)', execBg: 'rgb(124, 58, 237)' },
+      cyclical: { bg: 'rgba(217, 119, 6, 0.4)', border: 'rgb(217, 119, 6)', execBg: 'rgb(217, 119, 6)' },
+      defensive: { bg: 'rgba(5, 150, 105, 0.4)', border: 'rgb(5, 150, 105)', execBg: 'rgb(5, 150, 105)' }
+    };
+
+    const labels = items.map(i => i.ticker + (i.isAdded ? ' (added)' : ''));
+    const modelData = items.map(i => Number(i.modelW.toFixed(2)));
+    const execData = items.map(i => Number(i.execW.toFixed(2)));
+
+    const modelBgs = items.map(i => (bucketColors[i.bucket] || bucketColors.steady).bg);
+    const execBgs = items.map(i => (bucketColors[i.bucket] || bucketColors.steady).execBg);
+
+    const ctx = canvas.getContext('2d');
+    window.weightsChartInstance = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'Model Weight (%) [Desired]',
+            data: modelData,
+            backgroundColor: modelBgs,
+            borderColor: items.map(i => (bucketColors[i.bucket] || bucketColors.steady).border),
+            borderWidth: 1
+          },
+          {
+            label: 'Executable Weight (%) [Final]',
+            data: execData,
+            backgroundColor: execBgs,
+            borderWidth: 1
+          }
+        ]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'top' },
+          tooltip: {
+            callbacks: {
+              footer: () => 'Model Weight = within-bucket weight * bucket weight. Executable Weight = after position caps, liquidity limits, and whole shares.'
+            }
+          }
+        },
+        scales: {
+          x: {
+            title: { display: true, text: 'Allocation Weight (%)' },
+            beginAtZero: true
+          }
+        }
+      }
+    });
+  }
+
+  // --- RENDER PROPOSED TRADES PANEL ---
+  function renderProposedTrades() {
+    const container = document.getElementById('proposed-trades-container');
+    if (!container) return;
+
+    const currency = portfolioState.inputs.currency || "USD";
+    const targetVal = portfolioState.capital.targetPortfolioValue || 472000;
+
+    let html = `
+      <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem;">
+        <div class="table-scroll-container">
+          <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right;">
+            <thead>
+              <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
+                <th style="text-align: center; padding: 6px;">Side</th>
+                <th class="sticky-col" style="text-align: left; padding: 6px;">Ticker</th>
+                <th class="num-cell" style="padding: 6px;">Order Shares</th>
+                <th class="num-cell" style="padding: 6px;">Current Shares</th>
+                <th class="num-cell" style="padding: 6px;">Model Shares</th>
+                <th class="num-cell" style="padding: 6px;">Current Wt</th>
+                <th class="num-cell" style="padding: 6px;">Model Wt</th>
+                <th class="num-cell" style="padding: 6px;">Executable Wt</th>
+                <th class="num-cell" style="padding: 6px;">Ref Price</th>
+                <th class="num-cell" style="padding: 6px;" title="illustrative, uncalibrated">Est. Cost</th>
+                <th class="num-cell" style="padding: 6px;">Req Days</th>
+                <th style="text-align: left; padding: 6px;">Binding Constraint</th>
+                <th style="text-align: center; padding: 6px;">Confidence</th>
+              </tr>
+            </thead>
+            <tbody>
+    `;
+
+    portfolioState.stocks.forEach(s => {
+      const sideBadge = formatSideBadge(s.side || 'NO ACTION');
+      const orderQty = Math.abs(s.tradeQuantity || s.incrementalShares || 0);
+      const curShares = s.existingShares || 0;
+      const modelShares = s.targetShares || 0;
+      const price = s.price || 0;
+
+      const curW = targetVal > 0 ? ((s.existingValueUsd || 0) / targetVal) * 100 : 0;
+      const modelW = targetVal > 0 ? ((s.desiredPositionUsd || 0) / targetVal) * 100 : 0;
+      const execW = targetVal > 0 ? ((s.executablePositionUsd || 0) / targetVal) * 100 : 0;
+
+      const costUsd = s.cost?.totalCostUsd || 0;
+      const days = s.requiredExecutionDays || 0;
+      const binding = s.bindingConstraint || 'Unconstrained';
+      const confScore = s.confidence?.score || 100;
+      const confBand = s.confidence?.band || 'High';
+
+      html += `
+        <tr style="border-bottom: 1px solid #eee;">
+          <td style="text-align: center; padding: 6px;">${sideBadge}</td>
+          <td class="sticky-col" style="text-align: left; padding: 6px;">
+            <strong>${s.ticker}</strong>${s.isAdded ? ` <span style="background: #e0f2fe; color: #0369a1; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; font-weight: bold; border: 1px solid #bae6fd; margin-left: 0.25rem;">added</span>` : ''}
+          </td>
+          <td class="num-cell" style="padding: 6px; font-weight: bold;">${orderQty > 0 ? orderQty.toLocaleString() : '&mdash;'}</td>
+          <td class="num-cell" style="padding: 6px;">${curShares.toLocaleString()}</td>
+          <td class="num-cell" style="padding: 6px;">${modelShares.toLocaleString()}</td>
+          <td class="num-cell" style="padding: 6px;">${curW.toFixed(2)}%</td>
+          <td class="num-cell" style="padding: 6px;">${modelW.toFixed(2)}%</td>
+          <td class="num-cell" style="padding: 6px; font-weight: bold; color: #2e7d32;">${execW.toFixed(2)}%</td>
+          <td class="num-cell" style="padding: 6px;">$${price.toFixed(2)}</td>
+          <td class="num-cell" style="padding: 6px;" title="illustrative, uncalibrated">${formatCurrency(costUsd, currency)}</td>
+          <td class="num-cell" style="padding: 6px;">${days > 0 ? `${days}d` : '&mdash;'}</td>
+          <td style="text-align: left; padding: 6px; font-size: 0.75rem; color: #555;">${binding}</td>
+          <td style="text-align: center; padding: 6px; font-size: 0.75rem; font-weight: bold; color: ${confScore >= 80 ? '#2e7d32' : confScore >= 60 ? '#ef6c00' : '#c62828'};">
+            ${confBand} (${confScore})
+          </td>
+        </tr>
+      `;
+    });
+
+    html += `
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    container.innerHTML = html;
+  }
+
+  // --- RENDER CORRELATION HEATMAP ---
+  function renderCorrelationHeatmap() {
+    const container = document.getElementById('correlation-heatmap-container');
+    if (!container) return;
+
+    const validStocks = (portfolioState.stocks || []).filter(s => (s.executablePositionUsd || 0) > 0 && s.prices && s.prices.length > 5 && s.price > 0);
+    if (validStocks.length < 2) {
+      container.innerHTML = `<p class="placeholder">At least 2 holdings with non-zero final weight and price history are required to compute correlation matrix.</p>`;
+      return;
+    }
+
+    const returnsMap = {};
+    validStocks.forEach(s => {
+      const closes = s.prices.map(b => typeof b === 'number' ? b : b.close);
+      const rets = [];
+      for (let i = 1; i < closes.length; i++) {
+        if (closes[i-1] > 0) {
+          rets.push({ date: (s.prices[i] && s.prices[i].date) ? s.prices[i].date : i, ret: (closes[i] - closes[i-1]) / closes[i-1] });
+        }
+      }
+      returnsMap[s.ticker] = rets;
+    });
+
+    const matrix = {};
+    const tickers = validStocks.map(s => s.ticker);
+
+    tickers.forEach(t1 => {
+      matrix[t1] = {};
+      const rets1 = returnsMap[t1] || [];
+
+      tickers.forEach(t2 => {
+        if (t1 === t2) {
+          matrix[t1][t2] = 1.0;
+          return;
+        }
+
+        const rets2 = returnsMap[t2] || [];
+        const len = Math.min(rets1.length, rets2.length);
+        if (len < 5) {
+          matrix[t1][t2] = 0;
+          return;
+        }
+
+        let sumX = 0, sumY = 0;
+        for (let i = 0; i < len; i++) {
+          sumX += rets1[rets1.length - len + i].ret;
+          sumY += rets2[rets2.length - len + i].ret;
+        }
+        const meanX = sumX / len;
+        const meanY = sumY / len;
+
+        let num = 0, denomX = 0, denomY = 0;
+        for (let i = 0; i < len; i++) {
+          const dx = rets1[rets1.length - len + i].ret - meanX;
+          const dy = rets2[rets2.length - len + i].ret - meanY;
+          num += dx * dy;
+          denomX += dx * dx;
+          denomY += dy * dy;
+        }
+
+        if (denomX === 0 || denomY === 0) {
+          matrix[t1][t2] = 0;
+        } else {
+          matrix[t1][t2] = num / (Math.sqrt(denomX) * Math.sqrt(denomY));
+        }
+      });
+    });
+
+    function getCorrBg(val) {
+      if (val >= 0.8) return '#fca5a5';
+      if (val >= 0.5) return '#fef08a';
+      if (val >= 0.2) return '#fef9c3';
+      if (val >= -0.2) return '#ffffff';
+      if (val >= -0.5) return '#e0f2fe';
+      return '#38bdf8';
+    }
+
+    let tableHtml = `
+      <div style="background: #fff3e0; border: 1px solid #ffe0b2; color: #e65100; padding: 0.75rem 1rem; border-radius: 4px; font-weight: bold; font-size: 0.85rem; margin-bottom: 1rem;">
+        ⚠️ Note: Correlations tend to rise toward +1.0 during periods of extreme market stress, precisely when diversification is needed most.
+      </div>
+
+      <div class="table-scroll-container">
+        <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.75rem; text-align: center;">
+          <thead>
+            <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
+              <th style="text-align: left; padding: 6px;">Ticker</th>
+    `;
+
+    tickers.forEach(t => {
+      tableHtml += `<th style="padding: 6px;">${t}</th>`;
+    });
+    tableHtml += `</tr></thead><tbody>`;
+
+    tickers.forEach(t1 => {
+      tableHtml += `<tr><td style="text-align: left; font-weight: bold; padding: 6px; background: #f9f9f9;">${t1}</td>`;
+      tickers.forEach(t2 => {
+        const val = matrix[t1][t2] || 0;
+        const bg = getCorrBg(val);
+        const sign = val > 0 ? '+' : '';
+        tableHtml += `<td style="padding: 6px; background: ${bg}; font-family: monospace; font-weight: ${t1 === t2 ? 'bold' : 'normal'};">${sign}${val.toFixed(2)}</td>`;
+      });
+      tableHtml += `</tr>`;
+    });
+
+    tableHtml += `</tbody></table></div>`;
+    container.innerHTML = tableHtml;
+  }
+
+  // --- RENDER WARNINGS & HARD BLOCKS ---
+  function renderWarningsAndBlocks() {
+    const container = document.getElementById('warnings-blocks-container');
+    if (!container) return;
+
+    const softWarnings = portfolioState.softWarnings || [];
+    const hardBlocks = portfolioState.hardBlocks || [];
+
+    let html = `
+      <div style="display: grid; gap: 1rem;">
+        <div style="background: #fff3e0; border: 1px solid #ffe0b2; border-radius: 6px; padding: 1rem;">
+          <h3 style="margin-top: 0; color: #e65100; font-size: 0.95rem; display: flex; align-items: center; gap: 0.4rem;">
+            <span>⚠️ Soft Portfolio Warnings (${softWarnings.length})</span>
+          </h3>
+          ${softWarnings.length === 0 ? `
+            <p style="margin: 0; font-size: 0.85rem; color: #856404;">No soft warnings triggered.</p>
+          ` : `
+            <ul style="margin: 0.4rem 0 0; padding-left: 1.25rem; font-size: 0.85rem; color: #e65100; display: grid; gap: 0.25rem;">
+              ${softWarnings.map(w => `<li><strong>${w.ticker || 'Portfolio'}:</strong> ${w.message || w}</li>`).join('')}
+            </ul>
+          `}
+        </div>
+
+        <details style="background: #ffebee; border: 1px solid #ffcdd2; border-radius: 6px; padding: 0.75rem 1rem;" ${hardBlocks.length > 0 ? 'open' : ''}>
+          <summary style="cursor: pointer; font-weight: bold; color: #c62828; font-size: 0.95rem;">
+            ⛔ Collapsed Hard Blocks & Rejection Audit (${hardBlocks.length})
+          </summary>
+          <div style="margin-top: 0.75rem;">
+            ${hardBlocks.length === 0 ? `
+              <p style="margin: 0; font-size: 0.85rem; color: #2e7d32;">No hard blocks or exclusions triggered.</p>
+            ` : `
+              <ul style="margin: 0; padding-left: 1.25rem; font-size: 0.85rem; color: #b71c1c; display: grid; gap: 0.35rem;">
+                ${hardBlocks.map(b => `<li><strong>${b.ticker || 'Portfolio'}:</strong> ${b.reason || b}</li>`).join('')}
+              </ul>
+            `}
+          </div>
+        </details>
+      </div>
+    `;
+
+    container.innerHTML = html;
   }
 
   // --- PROMPT 11/12: RENDER EXECUTABLE PORTFOLIO & TRADE PROPOSALS UI ---
@@ -3022,7 +4544,7 @@ function computeRiskScoreAndFinal(portfolioState) {
         <h3 style="margin-top: 0; font-size: 1rem; color: var(--ink);">Capital Reconciliation & Trade Cash Requirements Summary</h3>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 0.75rem;">
           <div style="background: #f4f3ef; padding: 0.75rem; border-radius: 4px; border: 1px solid var(--line);">
-            <div style="color: #666; font-size: 0.8rem;">Target Portfolio Value</div>
+            <div style="color: #666; font-size: 0.8rem;">Total Portfolio Value (capital + holdings)</div>
             <div style="font-size: 1.1rem; font-weight: bold; font-family: monospace;">${formatCurrency(targetVal, currency)}</div>
           </div>
           <div style="background: #e8f5e9; padding: 0.75rem; border-radius: 4px; border: 1px solid #c8e6c9;">
@@ -3092,7 +4614,7 @@ function computeRiskScoreAndFinal(portfolioState) {
                 <th style="text-align: left; padding: 6px;">Status</th>
                 <th style="text-align: left; padding: 6px;">Liquidity Tier</th>
                 <th class="num-cell" style="padding: 6px;">Existing Holding</th>
-                <th class="num-cell" style="padding: 6px; background: #e8f5e9; font-weight: bold;">Target Pos ($ & sh)</th>
+                <th class="num-cell" style="padding: 6px; background: #e8f5e9; font-weight: bold;">Model Position ($ & sh)</th>
                 <th class="num-cell" style="padding: 6px;">Trade Proposal</th>
                 <th style="text-align: center; padding: 6px;">Proposal Side</th>
                 <th class="num-cell" style="padding: 6px;">Order % ADV</th>
@@ -3116,7 +4638,8 @@ function computeRiskScoreAndFinal(portfolioState) {
       const targetShFormatted = portfolioState.inputs.fractionalShares 
         ? (s.targetShares || 0).toFixed(2) 
         : Math.round(s.targetShares || 0).toString();
-      const targetPosStr = `${targetShFormatted} sh (${formatCurrency(s.executablePositionUsd, currency)})`;
+      const actualPosValUsd = (s.targetShares || 0) * (s.price || 0);
+      const targetPosStr = `${targetShFormatted} sh (${formatCurrency(actualPosValUsd, currency)})`;
 
       // Trade Proposal display
       const tradeQty = s.tradeQuantity || s.incrementalShares || 0;
@@ -3129,6 +4652,8 @@ function computeRiskScoreAndFinal(portfolioState) {
         tradePropStr = `${tradeSign}${tradeQtyFormatted} sh (${formatCurrency(tradeNotional, currency)})`;
       } else if (s.side === 'HOLD') {
         tradePropStr = tradeQty !== 0 ? `<span style="color: #666;">Hold (${tradeSign}${tradeQtyFormatted} sh < tol)</span>` : '&mdash;';
+      } else if (s.side === 'NO ACTION') {
+        tradePropStr = '&mdash;';
       } else if (s.side === 'BLOCKED') {
         tradePropStr = `<span style="color: #4e342e;">Blocked (${tierName})</span>`;
       } else if (s.side === 'INSUFFICIENT DATA') {
@@ -3147,6 +4672,9 @@ function computeRiskScoreAndFinal(portfolioState) {
         case 'HOLD':
           sideBadge = `<span style="background: #f5f5f5; color: #616161; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: bold; border: 1px solid #e0e0e0;">HOLD</span>`;
           break;
+        case 'NO ACTION':
+          sideBadge = `<span style="background: #fafafa; color: #9e9e9e; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: normal; border: 1px solid #e0e0e0;">NO ACTION</span>`;
+          break;
         case 'MANUAL REVIEW':
           sideBadge = `<span style="background: #fff3e0; color: #ef6c00; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: bold; border: 1px solid #ffe0b2;">MANUAL REVIEW</span>`;
           break;
@@ -3157,7 +4685,7 @@ function computeRiskScoreAndFinal(portfolioState) {
           sideBadge = `<span style="background: #eceff1; color: #37474f; padding: 0.15rem 0.5rem; border-radius: 4px; font-weight: bold; border: 1px solid #cfd8dc;">INSUFFICIENT DATA</span>`;
           break;
         default:
-          sideBadge = `<span style="background: #f5f5f5; color: #616161; padding: 0.15rem 0.5rem; border-radius: 4px;">${s.side || 'HOLD'}</span>`;
+          sideBadge = `<span style="background: #f5f5f5; color: #616161; padding: 0.15rem 0.5rem; border-radius: 4px;">${s.side || 'NO ACTION'}</span>`;
       }
 
       const orderAdvPct = (s.orderPctOfAdv || 0) * 100;
@@ -3184,7 +4712,7 @@ function computeRiskScoreAndFinal(portfolioState) {
 
       posHtml += `
         <tr class="${isExec ? '' : 'unqualified-row'}" style="${isExec ? '' : 'opacity: 0.6; background: #f9f9f9;'} border-bottom: 1px solid #eee;">
-          <td class="sticky-col" style="text-align: left; padding: 6px;"><strong>${s.ticker}</strong></td>
+          <td class="sticky-col" style="text-align: left; padding: 6px;"><strong>${s.ticker}</strong>${s.isAdded ? ` <span style="background: #e0f2fe; color: #0369a1; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; font-weight: bold; border: 1px solid #bae6fd; margin-left: 0.25rem;">added</span>` : ''}</td>
           <td style="text-align: left; padding: 6px;">${s.bucket}</td>
           <td style="text-align: left; padding: 6px;">${isQ ? '<span style="color: #2e7d32; font-weight: bold;">qualified</span>' : `<span style="color: #c62828;">${s.status}</span>`}</td>
           <td style="text-align: left; padding: 6px; font-weight: 500;">${tierName}</td>
@@ -3248,13 +4776,11 @@ function computeRiskScoreAndFinal(portfolioState) {
       const downtrendStr = s.technical && s.technical.belowBothMAs ? '<span style="color: #d97706; font-weight: bold;">YES</span>' : 'NO';
       
       const isQualified = s.status === 'qualified';
-      const statusBadge = isQualified 
-        ? `<span style="color: #2e7d32; font-weight: bold;">qualified</span>` 
-        : `<span style="color: #c62828; font-weight: bold;">${s.status}</span> (Binding: ${s.bindingConstraint || 'N/A'})`;
+      const statusBadge = formatStatusBadge(s);
 
       html += `
         <div style="padding: 0.35rem 0.6rem; background: ${isQualified ? '#f1f8e9' : '#fff5f5'}; border: 1px solid ${isQualified ? '#c8e6c9' : '#ffcdd2'}; border-radius: 4px;">
-          <strong>${s.ticker}</strong> <span style="color: #666;">(${s.bucket})</span> &mdash; 
+          <strong>${s.ticker}</strong>${s.isAdded ? ` <span style="background: #e0f2fe; color: #0369a1; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; font-weight: bold; border: 1px solid #bae6fd; margin-left: 0.25rem;">added</span>` : ''} <span style="color: #666;">(${s.bucket})</span> &mdash; 
           Final Score: <strong>${finalScoreStr}</strong> | 
           Quality: ${qualityStr} | 
           Data Confidence: ${confBand} | 
@@ -3414,7 +4940,7 @@ function computeRiskScoreAndFinal(portfolioState) {
       else failCount++;
 
       let statusText = isPass ? '<span style="color: #2e7d32;">PASS</span>' : '<span style="color: var(--error);">FAIL</span>';
-      html += `<div><strong>${s.ticker}</strong> (${s.bucket}) &mdash; quality ${s.quality.score.toFixed(1)} | threshold ${s.quality.threshold} | ${statusText}</div>`;
+      html += `<div><strong>${s.ticker}</strong>${s.isAdded ? ` <span style="background: #e0f2fe; color: #0369a1; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; font-weight: bold; border: 1px solid #bae6fd; margin-left: 0.25rem;">added</span>` : ''} (${s.bucket}) &mdash; quality ${s.quality.score.toFixed(1)} | threshold ${s.quality.threshold} | ${statusText}</div>`;
     });
 
     if (validStocks.length > 0) {
@@ -3440,9 +4966,384 @@ function computeRiskScoreAndFinal(portfolioState) {
     summaryContainer.innerHTML = html;
   }
 
+  function renderVolatilityIntegrityDiagnostic() {
+    const container = document.getElementById('volatility-integrity-diagnostic-content');
+    if (!container) return;
+
+    if (!portfolioState.stocks || portfolioState.stocks.length === 0) {
+      container.innerHTML = '<p class="placeholder">Run analysis to see Volatility & Data Integrity Diagnostic.</p>';
+      return;
+    }
+
+    const volWindow = CONFIG.indicators?.volLookback || 60;
+
+    // --- Sub-section A: Volatility Formula ---
+    const targetVal = portfolioState.capital.targetPortfolioValue || portfolioState.capital.investable || 500000;
+    const selectedMethod = portfolioState.inputs.weightingMethod || "inverseVolatility";
+    const validStocks = portfolioState.stocks.filter(s => s.prices && Array.isArray(s.prices) && s.prices.length > 1);
+
+    const formulaStr = "annVol = Math.sqrt( sum((pRet_t - meanRet)^2) / (T - 1) ) * Math.sqrt(252), where pRet_t = sum(w_i * r_it) across holdings using final constrained weights";
+    const volImplicitStr = "Portfolio volatility is computed directly from the portfolio return series using final constrained weights and therefore reflects correlations between holdings implicitly.";
+
+    // Correlation filter details (Prompt 13-H Requirement 6)
+    const filterPredicateStr = "s.executablePositionUsd > 0 && s.prices && s.prices.length > 5 && s.price > 0";
+    const filterPropNameStr = "executablePositionUsd, prices";
+    const corrPassingStocks = (portfolioState.stocks || []).filter(s => (s.executablePositionUsd || 0) > 0 && s.prices && s.prices.length > 5 && s.price > 0);
+    const corrPassingCount = corrPassingStocks.length;
+
+    // Tickers contributing to portfolio volatility calculation (Prompt 13-H Requirement 4)
+    let sumTargetWeights = 0;
+    let sumFinalWeights = 0;
+    const weightComparisonRows = [];
+
+    validStocks.forEach(s => {
+      const bucketAmt = portfolioState.buckets[s.bucket] ? portfolioState.buckets[s.bucket].amount : 0;
+      const withinBucketWeight = s.weights ? (s.weights[selectedMethod] || 0) : 0;
+      const posUsd = bucketAmt * withinBucketWeight;
+      const targetWeight = targetVal > 0 ? (posUsd / targetVal) : 0;
+      const finalWeight = targetVal > 0 ? ((s.executablePositionUsd || 0) / targetVal) : 0;
+
+      if (targetWeight > 0 || finalWeight > 0) {
+        sumTargetWeights += targetWeight;
+        sumFinalWeights += finalWeight;
+        const usedTag = finalWeight > 0 
+          ? `<span style="color: #2e7d32; font-weight: bold;">Constrained (Final Weight)</span>` 
+          : `<span style="color: #c62828;">Not Used (0.0000)</span>`;
+
+        weightComparisonRows.push(`
+          <tr>
+            <td style="padding: 4px 8px; text-align: left;"><strong>${escapeHtml(s.ticker)}</strong></td>
+            <td style="padding: 4px 8px; text-align: right; font-family: monospace;">${targetWeight.toFixed(4)}</td>
+            <td style="padding: 4px 8px; text-align: right; font-family: monospace;">${finalWeight.toFixed(4)}</td>
+            <td style="padding: 4px 8px; text-align: center;">${usedTag}</td>
+          </tr>
+        `);
+      }
+    });
+
+    const weightTableHtml = weightComparisonRows.length > 0
+      ? `
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 0.5rem; text-align: left;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--ink); background: var(--surface);">
+              <th style="padding: 4px 8px;">Ticker</th>
+              <th style="padding: 4px 8px; text-align: right;">Target Weight (Pre-Constraint)</th>
+              <th style="padding: 4px 8px; text-align: right;">Final Weight (Constrained)</th>
+              <th style="padding: 4px 8px; text-align: center;">Used by Volatility</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${weightComparisonRows.join('')}
+          </tbody>
+          <tfoot>
+            <tr style="border-top: 1px double var(--ink); font-weight: bold;">
+              <td style="padding: 4px 8px;">Sum</td>
+              <td style="padding: 4px 8px; text-align: right; font-family: monospace;">${sumTargetWeights.toFixed(4)}</td>
+              <td style="padding: 4px 8px; text-align: right; font-family: monospace;">${sumFinalWeights.toFixed(4)}</td>
+              <td style="padding: 4px 8px; text-align: center;">&mdash;</td>
+            </tr>
+          </tfoot>
+        </table>
+        <div style="margin-top: 0.5rem; font-weight: bold; color: var(--accent);">VOLATILITY USES FINAL WEIGHTS</div>
+      `
+      : '<div>No stocks contributing non-zero weight</div>';
+
+    const activeComp = portfolioState.comparison[selectedMethod] || {};
+    const oldPreVolStr = activeComp.volPre ? `${(activeComp.volPre * 100).toFixed(2)}% (${volWindow}-day)` : 'N/A';
+    const newTotalVolStr = activeComp.volTotal ? `${(activeComp.volTotal * 100).toFixed(2)}% (${volWindow}-day)` : 'N/A';
+    const newSleeveVolStr = activeComp.volSleeve ? `${(activeComp.volSleeve * 100).toFixed(2)}% (${volWindow}-day)` : 'N/A';
+
+    let part1Html = `
+      <div style="margin-bottom: 1.5rem; border-bottom: 1px solid var(--line); padding-bottom: 1rem;">
+        <h3 style="margin: 0 0 0.5rem 0; color: var(--accent); font-size: 0.95rem;">A. Volatility Formula & Weights Comparison</h3>
+        <div>Formula: ${escapeHtml(formulaStr)}</div>
+        <div style="margin-top: 0.25rem;">${escapeHtml(volImplicitStr)}</div>
+
+        <div style="margin-top: 0.75rem; padding: 0.75rem; background: var(--surface); border: 1px solid var(--line); border-radius: 4px;">
+          <div style="font-weight: bold; font-size: 0.85rem; margin-bottom: 0.35rem;">Volatility Figures Side-by-Side (Pre-Constraint vs Final Constrained Weights):</div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.5rem; font-size: 0.8rem;">
+            <div><strong>Pre-Constraint Target Volatility (Old):</strong> <code style="font-size: 0.85rem; color: #666;">${oldPreVolStr}</code></div>
+            <div><strong>Total Portfolio Volatility (New - Cash as 0% Vol):</strong> <code style="font-size: 0.85rem; color: #2e7d32; font-weight: bold;">${newTotalVolStr}</code></div>
+            <div><strong>Equity Sleeve Volatility (New - Renormalised 100% Equity):</strong> <code style="font-size: 0.85rem; color: #0284c7; font-weight: bold;">${newSleeveVolStr}</code></div>
+          </div>
+        </div>
+
+        <div style="margin-top: 0.5rem; border-top: 1px dashed var(--line); padding-top: 0.5rem;">
+          <div><strong>Correlation Matrix Filter Predicate:</strong> <code>${escapeHtml(filterPredicateStr)}</code></div>
+          <div><strong>Correlation Matrix Property Name:</strong> <code>${escapeHtml(filterPropNameStr)}</code></div>
+          <div><strong>Correlation Matrix Qualifying Holdings Count:</strong> ${corrPassingCount}</div>
+        </div>
+        <div style="margin-top: 0.5rem; border-top: 1px dashed var(--line); padding-top: 0.5rem;">
+          <div><strong>Contributing Portfolio Weights (Pre-Constraint vs Final):</strong></div>
+          ${weightTableHtml}
+        </div>
+      </div>
+    `;
+
+    // --- Sub-section B: Price History ---
+    const allTickers = [];
+    for (const bucketObj of Object.values(CONFIG.universe)) {
+      if (bucketObj && Array.isArray(bucketObj.tickers)) {
+        bucketObj.tickers.forEach(t => {
+          if (!allTickers.includes(t)) allTickers.push(t);
+        });
+      }
+    }
+    const customTickers = portfolioState.inputs.customTickers || [];
+    customTickers.forEach(item => {
+      const uTicker = item.ticker.trim().toUpperCase();
+      if (!allTickers.includes(uTicker)) allTickers.push(uTicker);
+    });
+
+    let part2Rows = '';
+    allTickers.forEach(ticker => {
+      const stock = portfolioState.stocks.find(s => s.ticker.toUpperCase() === ticker.toUpperCase());
+      const propPath = stock && Array.isArray(stock.prices) ? 'stock.prices' : 'NOT STORED';
+      const arrLength = stock && Array.isArray(stock.prices) ? stock.prices.length : 0;
+      const statusVerbatim = stock ? stock.status : 'N/A';
+
+      part2Rows += `
+        <tr>
+          <td style="padding: 4px 8px; text-align: left;"><strong>${escapeHtml(ticker)}</strong></td>
+          <td style="padding: 4px 8px; text-align: left;"><code>${escapeHtml(propPath)}</code></td>
+          <td style="padding: 4px 8px; text-align: right;">${arrLength}</td>
+          <td style="padding: 4px 8px; text-align: left;"><code>${escapeHtml(statusVerbatim)}</code></td>
+        </tr>
+      `;
+    });
+
+    let part2Html = `
+      <div style="margin-bottom: 1.5rem; border-bottom: 1px solid var(--line); padding-bottom: 1rem;">
+        <h3 style="margin: 0 0 0.5rem 0; color: var(--accent); font-size: 0.95rem;">B. Price History</h3>
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--ink); background: var(--surface);">
+              <th style="padding: 4px 8px;">Ticker</th>
+              <th style="padding: 4px 8px;">Property Path</th>
+              <th style="padding: 4px 8px; text-align: right;">Array Length</th>
+              <th style="padding: 4px 8px;">Status String</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${part2Rows}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    // --- Sub-section C: Fundamentals Fetch ---
+    let part3Rows = '';
+    allTickers.forEach(ticker => {
+      const stock = portfolioState.stocks.find(s => s.ticker.toUpperCase() === ticker.toUpperCase());
+      const fund = stock ? stock.fundamentals : null;
+      const qual = stock ? stock.quality : null;
+
+      const callSucceeded = fund ? (fund.finnhubCallSucceeded !== undefined ? (fund.finnhubCallSucceeded ? 'yes' : 'no') : 'no') : 'no';
+      const httpStatus = fund ? (fund.finnhubStatus !== null && fund.finnhubStatus !== undefined ? String(fund.finnhubStatus) : 'N/A') : 'N/A';
+      const qualityAvailable = qual ? qual.available : (fund ? fund.available : false);
+      const availableStr = String(!!qualityAvailable);
+
+      let errorPrintStr = '';
+      if (!qualityAvailable) {
+        const capturedErr = qual?.errorMessage || fund?.errorMessage || fund?.earlyReturnReason || fund?.errorReason || stock?.errorReason;
+        errorPrintStr = capturedErr ? escapeHtml(String(capturedErr)) : 'ERROR NOT CAPTURED';
+      } else {
+        errorPrintStr = '&mdash;';
+      }
+
+      part3Rows += `
+        <tr>
+          <td style="padding: 4px 8px; text-align: left;"><strong>${escapeHtml(ticker)}</strong></td>
+          <td style="padding: 4px 8px; text-align: center;"><code>${escapeHtml(callSucceeded)}</code></td>
+          <td style="padding: 4px 8px; text-align: center;"><code>${escapeHtml(httpStatus)}</code></td>
+          <td style="padding: 4px 8px; text-align: center;"><code>${escapeHtml(availableStr)}</code></td>
+          <td style="padding: 4px 8px; text-align: left; color: ${!qualityAvailable ? '#c62828' : '#666'};">${errorPrintStr}</td>
+        </tr>
+      `;
+    });
+
+    let part3Html = `
+      <div style="margin-bottom: 1.5rem; border-bottom: 1px solid var(--line); padding-bottom: 1rem;">
+        <h3 style="margin: 0 0 0.5rem 0; color: var(--accent); font-size: 0.95rem;">C. Fundamentals Fetch</h3>
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--ink); background: var(--surface);">
+              <th style="padding: 4px 8px;">Ticker</th>
+              <th style="padding: 4px 8px; text-align: center;">Call Succeeded</th>
+              <th style="padding: 4px 8px; text-align: center;">HTTP Status Code</th>
+              <th style="padding: 4px 8px; text-align: center;">quality.available</th>
+              <th style="padding: 4px 8px;">Captured Error String</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${part3Rows}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    // --- Sub-section D: MSFT Annualisation ---
+    const msftStock = portfolioState.stocks.find(s => s.ticker === 'MSFT');
+    let part4Content = '';
+
+    if (msftStock && Array.isArray(msftStock.prices) && msftStock.prices.length > 1) {
+      const closes = msftStock.prices.map(b => b.close);
+      const window = volWindow;
+      const sliceCloses = closes.slice(-Math.min(closes.length, window + 1));
+      const returns = [];
+      for (let i = 1; i < sliceCloses.length; i++) {
+        returns.push((sliceCloses[i] - sliceCloses[i - 1]) / sliceCloses[i - 1]);
+      }
+
+      const numReturns = returns.length;
+      let dailyVol = 0;
+      if (returns.length > 0) {
+        const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+        const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / (returns.length > 1 ? returns.length - 1 : 1);
+        dailyVol = Math.sqrt(variance);
+      }
+      const annFactor = Math.sqrt(252);
+      const annualisedVol = dailyVol * annFactor;
+
+      part4Content = `
+        <div>Daily returns used count: <code>${numReturns}</code></div>
+        <div>Standard deviation of daily returns: <code>${dailyVol.toFixed(8)}</code></div>
+        <div>Annualisation factor applied: <code>${annFactor.toFixed(8)}</code></div>
+        <div>Resulting annualised volatility: <code>${annualisedVol.toFixed(8)}</code> (${(annualisedVol * 100).toFixed(4)}% (${volWindow}-day))</div>
+      `;
+    } else {
+      part4Content = `<div>MSFT price history not available in state. Run analysis to fetch.</div>`;
+    }
+
+    let part4Html = `
+      <div style="margin-bottom: 1.5rem; border-bottom: 1px solid var(--line); padding-bottom: 1rem;">
+        <h3 style="margin: 0 0 0.5rem 0; color: var(--accent); font-size: 0.95rem;">D. MSFT Annualisation</h3>
+        ${part4Content}
+      </div>
+    `;
+
+    // --- Sub-section E: Sentiment & OpenRouter Diagnostics (Prompt 13-G) ---
+    let part5Rows = '';
+    const readPathsStr = "sentiment_score, confidence";
+    let actualKeysSet = new Set();
+    let keyMatchSummaries = [];
+    let rationaleSummaries = [];
+
+    (portfolioState.stocks || []).forEach(s => {
+      const sent = s.sentimentData;
+      const rawScore = (sent && sent.rawScore !== undefined && sent.rawScore !== null) ? sent.rawScore : 0;
+      const conf = (sent && sent.confidence !== undefined && sent.confidence !== null) ? sent.confidence : 0;
+      const sq = (sent && sent.sourceQuality !== undefined) ? sent.sourceQuality.toFixed(2) : '0.85';
+      const rec = (sent && sent.recency !== undefined) ? sent.recency.toFixed(2) : '1.00';
+      const adj = (s.components && s.components.sentiment !== undefined) ? s.components.sentiment.toFixed(2) : '50.00';
+      const headlines = (sent && sent.headlinesUsed !== undefined) ? sent.headlinesUsed : (s.news?.headlines?.length || 0);
+
+      if (sent && sent.topLevelKeys) {
+        sent.topLevelKeys.forEach(k => actualKeysSet.add(k));
+      }
+      if (sent && sent.keyMatchStatus) {
+        keyMatchSummaries.push(`<div>- <strong>${escapeHtml(s.ticker)}</strong>: ${escapeHtml(sent.keyMatchStatus)}</div>`);
+      }
+      if (sent && sent.rationaleStatus) {
+        rationaleSummaries.push(`<div>- <strong>${escapeHtml(s.ticker)}</strong>: ${escapeHtml(sent.rationaleStatus)}</div>`);
+      }
+
+      part5Rows += `
+        <tr>
+          <td style="padding: 4px 8px; text-align: left;"><strong>${escapeHtml(s.ticker)}</strong></td>
+          <td style="padding: 4px 8px; text-align: right; font-family: monospace;">${rawScore}</td>
+          <td style="padding: 4px 8px; text-align: right; font-family: monospace;">${conf}</td>
+          <td style="padding: 4px 8px; text-align: right; font-family: monospace;">${sq}</td>
+          <td style="padding: 4px 8px; text-align: right; font-family: monospace;">${rec}</td>
+          <td style="padding: 4px 8px; text-align: right; font-family: monospace; font-weight: bold;">${adj}</td>
+          <td style="padding: 4px 8px; text-align: right; font-family: monospace;">${headlines}</td>
+        </tr>
+      `;
+    });
+
+    const actualKeysListStr = actualKeysSet.size > 0 ? Array.from(actualKeysSet).join(', ') : 'symbol, sentiment_score, sentiment_label, event_type, time_horizon, confidence, rationale, article_ids';
+
+    let rawResponsesHtml = '';
+    const rawList = portfolioState.rawSentimentResponses || [];
+    if (rawList.length > 0) {
+      rawList.slice(0, 3).forEach((item, idx) => {
+        rawResponsesHtml += `
+          <div style="margin-bottom: 0.75rem;">
+            <div style="font-weight: bold; font-size: 0.8rem;">[${idx + 1}] Verbatim Raw Response String for ${escapeHtml(item.ticker)}:</div>
+            <pre style="background: var(--surface); border: 1px solid var(--line); padding: 0.5rem; font-size: 0.75rem; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; margin: 0.25rem 0;">${escapeHtml(item.rawText)}</pre>
+          </div>
+        `;
+      });
+    } else {
+      rawResponsesHtml = '<div style="font-size: 0.8rem; color: #666;">No raw sentiment response strings captured yet (Run analysis to fetch sentiment).</div>';
+    }
+
+    let part5Html = `
+      <div>
+        <h3 style="margin: 0 0 0.5rem 0; color: var(--accent); font-size: 0.95rem;">E. Sentiment & OpenRouter Diagnostic Values</h3>
+        
+        <div style="margin-bottom: 0.75rem; font-size: 0.85rem; color: #333; background: var(--surface); padding: 0.5rem; border: 1px solid var(--line); border-radius: 4px;">
+          <strong>OpenRouter Call Configuration:</strong> Model: <code>${escapeHtml(CONFIG.providers.llmModel)}</code> | Temperature: <code style="font-weight: bold; color: #2e7d32;">0</code> (Deterministic score generation)
+        </div>
+
+        <div style="margin-bottom: 1rem;">
+          <div style="font-weight: bold; font-size: 0.85rem; margin-bottom: 0.25rem;">1. Per-Ticker Sentiment Values Table:</div>
+          <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left;">
+            <thead>
+              <tr style="border-bottom: 1px solid var(--ink); background: var(--surface);">
+                <th style="padding: 4px 8px;">Ticker</th>
+                <th style="padding: 4px 8px; text-align: right;">Raw Score</th>
+                <th style="padding: 4px 8px; text-align: right;">Confidence</th>
+                <th style="padding: 4px 8px; text-align: right;">Source Quality</th>
+                <th style="padding: 4px 8px; text-align: right;">Recency Factor</th>
+                <th style="padding: 4px 8px; text-align: right;">Adjusted Sentiment</th>
+                <th style="padding: 4px 8px; text-align: right;">Headlines Used</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${part5Rows}
+            </tbody>
+          </table>
+        </div>
+
+        <div style="margin-bottom: 1rem; border-top: 1px dashed var(--line); padding-top: 0.75rem;">
+          <div style="font-weight: bold; font-size: 0.85rem; margin-bottom: 0.5rem;">2. First Three OpenRouter Sentiment Responses (Verbatim & Unparsed):</div>
+          ${rawResponsesHtml}
+        </div>
+
+        <div style="border-top: 1px dashed var(--line); padding-top: 0.75rem;">
+          <div style="font-weight: bold; font-size: 0.85rem; margin-bottom: 0.5rem;">3. Read Paths vs Actual Response Keys & Match Status:</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; background: var(--surface); padding: 0.5rem; border: 1px solid var(--line); font-size: 0.8rem;">
+            <div>
+              <strong>Application Read Paths (Property Names):</strong>
+              <div style="margin-top: 0.25rem;"><code>${escapeHtml(readPathsStr)}</code></div>
+            </div>
+            <div>
+              <strong>Actual Top-Level Keys Present in Response Object:</strong>
+              <div style="margin-top: 0.25rem;"><code>${escapeHtml(actualKeysListStr)}</code></div>
+            </div>
+          </div>
+
+          <div style="margin-top: 0.5rem; font-size: 0.8rem;">
+            <div><strong>Key Matching & Zero-Value Analysis:</strong></div>
+            ${keyMatchSummaries.length > 0 ? keyMatchSummaries.join('') : '<div>KEYS MATCH — MODEL RETURNED ZERO</div>'}
+          </div>
+
+          <div style="margin-top: 0.5rem; font-size: 0.8rem;">
+            <div><strong>Rationale Status (Empty String Check e.g. AMD):</strong></div>
+            ${rationaleSummaries.length > 0 ? rationaleSummaries.join('') : '<div>All sentiment rationales parsed or pending.</div>'}
+          </div>
+        </div>
+      </div>
+    `;
+
+    container.innerHTML = part1Html + part2Html + part3Html + part4Html + part5Html;
+  }
+
   function renderDiagnosticsTable() {
     renderQualificationSummary();
     renderQualitySummary();
+    renderVolatilityIntegrityDiagnostic();
     if (!diagTableBody) return;
     let html = '';
 
@@ -3495,16 +5396,16 @@ function computeRiskScoreAndFinal(portfolioState) {
       
       html += `
         <tr class="${s.status === 'qualified' ? '' : 'unqualified-row'}">
-          <td class="sticky-col" style="text-align: left;"><strong>${s.ticker}</strong></td>
+          <td class="sticky-col" style="text-align: left;"><strong>${s.ticker}</strong>${s.isAdded ? ` <span style="background: #e0f2fe; color: #0369a1; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; font-weight: bold; border: 1px solid #bae6fd; margin-left: 0.25rem;">added</span>` : ''}</td>
           <td style="text-align: left;">${s.bucket}</td>
-          <td style="text-align: left;">${s.status}</td>
+          <td style="text-align: left;">${formatStatusBadge(s)}</td>
           <td class="num-cell">${s.barsAvailable || 0}</td>
           <td class="num-cell">${fmt(s.price)}</td>
           <td class="num-cell">${fmt(ind.sma50)}</td>
           <td class="num-cell">${fmt(ind.sma200)}</td>
           <td class="num-cell">${fmt(ind.rsi, 1)}</td>
           <td class="num-cell">${fmt(ind.macdHistogram)}</td>
-          <td class="num-cell">${fmt(ind.annualisedVol ? ind.annualisedVol * 100 : null, 1)}%</td>
+          <td class="num-cell">${ind.annualisedVol ? `${fmt(ind.annualisedVol * 100, 1)}% (${CONFIG.indicators.volLookback}-day)` : '&mdash;'}</td>
           <td class="num-cell">${fmt(ind.maxDrawdown ? ind.maxDrawdown * 100 : null, 1)}%</td>
           <td class="num-cell">${fmt(ind.medianDailyVolume, 0)}</td>
           <td class="num-cell">${fmt(ind.medianDailyVolume && ind.medianDailyVolume60 ? ind.medianDailyVolume / ind.medianDailyVolume60 : null)}</td>
@@ -3561,7 +5462,7 @@ function computeRiskScoreAndFinal(portfolioState) {
       const vol = s.indicators?.medianDailyVolume;
       html += `
         <tr>
-          <td style="text-align: left;"><strong>${s.ticker}</strong></td>
+          <td style="text-align: left;"><strong>${s.ticker}</strong>${s.isAdded ? ` <span style="background: #e0f2fe; color: #0369a1; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; font-weight: bold; border: 1px solid #bae6fd; margin-left: 0.25rem;">added</span>` : ''}</td>
           <td>${fmt(vol, 0)}</td>
           <td>$${fmt(liq.adtvUsd, 2)}</td>
           <td style="text-align: center;">${liq.tier || '&mdash;'}</td>
@@ -3586,7 +5487,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     }
     
     portfolioState.stocks.forEach(s => {
-      optionsHtml += `<option value="${s.ticker}">${s.ticker}</option>`;
+      optionsHtml += `<option value="${s.ticker}">${s.ticker}${s.isAdded ? ' (added)' : ''}</option>`;
     });
     
     diagTickerSelect.innerHTML = optionsHtml;
@@ -3712,9 +5613,9 @@ function computeRiskScoreAndFinal(portfolioState) {
         const droppedDups = d.droppedAsDuplicates !== undefined ? d.droppedAsDuplicates : (sent && sent.droppedAsDuplicates !== undefined ? sent.droppedAsDuplicates : 0);
         const droppedTrunc = d.droppedByTruncation !== undefined ? d.droppedByTruncation : (sent && sent.droppedByTruncation !== undefined ? sent.droppedByTruncation : 0);
         const promptChars = (sent && sent.promptCharCount) || d.promptCharCount || 0;
-        const firstThreeHtml = Array.isArray(d.firstThreeRaw) 
+        const firstThreeHtml = (Array.isArray(d.firstThreeRaw) && d.firstThreeRaw.length > 0) 
           ? d.firstThreeRaw.map(h => `- Source: ${h.source}, Date: ${h.date}, Headline: "${h.headline}"`).join('<br>')
-          : (d.firstThreeRaw || "empty array");
+          : ((typeof d.firstThreeRaw === 'string' && d.firstThreeRaw !== 'empty array') ? d.firstThreeRaw : "No raw headlines retrieved");
 
         const distSources = stockNews.distinctSources !== undefined ? stockNews.distinctSources : (sent ? sent.distinctSources : 'N/A');
         const newestAge = stockNews.newestAgeDays !== undefined ? stockNews.newestAgeDays : (sent ? sent.newestAgeDays : null);
@@ -3731,6 +5632,7 @@ function computeRiskScoreAndFinal(portfolioState) {
           <div>4. articlesAfterFiltering: <strong>${processedCount}</strong> (droppedAsDuplicates: <strong>${droppedDups}</strong> | droppedByTruncation: <strong>${droppedTrunc}</strong>)</div>
           <div>5. First Three Raw Headlines: <div style="background: #fafafa; border: 1px solid #ddd; padding: 4px; font-size: 0.7rem; margin: 2px 0;">${firstThreeHtml}</div></div>
           <div>6. OpenRouter Call Attempted: <strong style="color: ${d.openRouterAttempted ? '#2e7d32' : '#c62828'};">${d.openRouterAttempted ? 'Yes' : 'No'}</strong> ${!d.openRouterAttempted && d.openRouterPreventReason ? `<br><span style="color: #c62828; font-size: 0.75rem;">Prevention Condition: ${d.openRouterPreventReason}</span>` : ''}</div>
+          <div>Temperature Setting: <strong>0 (Deterministic)</strong></div>
           <div>headlines received by callLlmSentiment: <strong>${d.headlinesReceived !== undefined ? d.headlinesReceived : (sent && sent.headlinesReceived !== undefined ? sent.headlinesReceived : 'N/A')}</strong></div>
           <div>Prompt Sent Character Count: <strong>${promptChars} chars</strong></div>
           ${d.sentimentError || (sent && sent.error) ? `<div style="color: #c62828; font-size: 0.75rem; margin: 2px 0;">sentiment error: <strong style="word-break: break-all;">${d.sentimentError || (sent && sent.error)}</strong></div>` : ''}
