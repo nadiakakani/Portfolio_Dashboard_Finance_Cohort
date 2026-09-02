@@ -218,68 +218,275 @@ function calculateCapital() {
   return portfolioState.capital;
 }
 
-// Calculate bucket weights per A6.2
-function calculateBucketWeights(R) {
-  let weights;
+// Task 1: computeRegimeScore() from benchmark close vs SMA200 and breadth of 20 monitored stocks
+function computeRegimeScore() {
+  const bm = portfolioState.benchmark;
+  let bmAbove = false;
+  let bmPrice = 0;
+  let bmSma200 = 0;
+  let bmTicker = CONFIG.benchmark || "SPY";
+  let bmHasData = false;
+
+  if (bm && bm.price > 0 && bm.sma200 > 0) {
+    bmPrice = bm.price;
+    bmSma200 = bm.sma200;
+    bmAbove = bmPrice > bmSma200;
+    bmHasData = true;
+  } else if (bm && bm.aboveSma200 !== undefined) {
+    bmAbove = !!bm.aboveSma200;
+    bmPrice = bm.price || 0;
+    bmSma200 = bm.sma200 || 0;
+    bmHasData = bmPrice > 0;
+  }
+
+  // Breadth: percentage of monitored universe stocks above their SMA200
+  const stocks = portfolioState.stocks || [];
+  const validStocks = stocks.filter(s => s.status !== 'data-error' && s.price > 0 && s.indicators && s.indicators.sma200 > 0);
+  
+  let countAbove = 0;
+  let totalMonitored = validStocks.length;
+  let breadthPct = 0.50; // Neutral 50% default before analysis run
+
+  if (totalMonitored > 0) {
+    countAbove = validStocks.filter(s => s.price > s.indicators.sma200).length;
+    breadthPct = countAbove / totalMonitored;
+  } else if (!bmHasData) {
+    bmAbove = true;
+    breadthPct = 0.50;
+  }
+
+  // TASK 1 Formula: regimeScore = 50 × (benchmark above SMA200 ? 1 : 0) + 50 × breadthPct
+  const regimeScore = 50 * (bmAbove ? 1 : 0) + 50 * breadthPct; // 0 to 100
+  const impliedR = Math.max(0, Math.min(1, regimeScore / 100));
+
+  return {
+    bmAbove,
+    bmPrice,
+    bmSma200,
+    bmTicker,
+    bmHasData,
+    countAbove,
+    totalMonitored,
+    breadthPct,
+    regimeScore,
+    impliedR,
+    hasFullData: bmHasData || totalMonitored > 0
+  };
+}
+
+// Task 2: Map regimeScore to regime allocation using SAME formulas as A6.2, treating regimeScore / 100 as implied R
+function computeRegimeWeights(impliedR) {
+  const steady    = 0.35 - 0.10 * impliedR;
+  const growth    = 0.10 + 0.35 * impliedR;
+  const cyclical  = 0.10 + 0.10 * impliedR;
+  const defensive = 0.45 - 0.35 * impliedR;
+  return { steady, growth, cyclical, defensive };
+}
+
+// Task 3 & 4: Combine strategic weights with tactical regime tilt (cap default 10%)
+function calculateBucketAllocations(R) {
+  let strategicWeights;
   let modeLabel = `Formula-Derived from R=${R.toFixed(2)}`;
 
   if (activePreset === 'balanced') {
-    weights = { steady: 0.35, growth: 0.25, cyclical: 0.20, defensive: 0.20 };
+    strategicWeights = { steady: 0.35, growth: 0.25, cyclical: 0.20, defensive: 0.20 };
     modeLabel = "Balanced Preset (35/25/20/20) — preset, not formula-derived";
   } else {
-    const steady    = 0.35 - 0.10 * R;
-    const growth    = 0.10 + 0.35 * R;
-    const cyclical  = 0.10 + 0.10 * R;
-    const defensive = 0.45 - 0.35 * R;
-    weights = { steady, growth, cyclical, defensive };
+    strategicWeights = {
+      steady:    0.35 - 0.10 * R,
+      growth:    0.10 + 0.35 * R,
+      cyclical:  0.10 + 0.10 * R,
+      defensive: 0.45 - 0.35 * R
+    };
+  }
+
+  const regimeData = computeRegimeScore();
+  const regimeWeights = computeRegimeWeights(regimeData.impliedR);
+
+  const enabled = !!CONFIG.regimeOverlay.enabled;
+  const cap = Number(CONFIG.regimeOverlay.cap ?? 0.10);
+
+  const finalWeights = {};
+  const regimeAdjustments = {};
+
+  const keys = ['steady', 'growth', 'cyclical', 'defensive'];
+  for (const k of keys) {
+    if (enabled) {
+      // TASK 3 Formula: finalBucketWeight = (1 − cap) × strategicWeight + cap × regimeWeight
+      finalWeights[k] = (1 - cap) * strategicWeights[k] + cap * regimeWeights[k];
+      regimeAdjustments[k] = finalWeights[k] - strategicWeights[k];
+    } else {
+      finalWeights[k] = strategicWeights[k];
+      regimeAdjustments[k] = 0;
+    }
+    // TASK 4 Enforce non-negativity
+    finalWeights[k] = Math.max(0, finalWeights[k]);
+  }
+
+  // Normalize finalWeights to ensure exact sum = 1.0000
+  const sumFinal = keys.reduce((s, k) => s + finalWeights[k], 0);
+  if (sumFinal > 0 && Math.abs(sumFinal - 1.0) > 1e-6) {
+    keys.forEach(k => finalWeights[k] /= sumFinal);
   }
 
   // Assert sum is 1.00
-  const sum = weights.steady + weights.growth + weights.cyclical + weights.defensive;
   const errBanner = document.getElementById('weight-error-banner');
-  if (Math.abs(sum - 1.0) > 1e-5) {
-    console.error("Bucket weights sum error:", sum);
+  if (Math.abs(sumFinal - 1.0) > 1e-5) {
+    console.error("Bucket weights sum error:", sumFinal);
     if (errBanner) {
       errBanner.style.display = 'block';
-      errBanner.textContent = `CRITICAL INVARIANT ERROR: Bucket weights sum to ${(sum*100).toFixed(2)}%, not 100%!`;
+      errBanner.textContent = `CRITICAL INVARIANT ERROR: Bucket weights sum to ${(sumFinal*100).toFixed(2)}%, not 100%!`;
     }
   } else {
     if (errBanner) errBanner.style.display = 'none';
   }
 
   const modeEl = document.getElementById('weight-mode-label');
-  if (modeEl) modeEl.textContent = modeLabel;
+  if (modeEl) {
+    modeEl.textContent = enabled
+      ? `${modeLabel} + Tactical Overlay (${(cap * 100).toFixed(0)}% Cap)`
+      : modeLabel;
+  }
 
-  return weights;
+  return {
+    strategicWeights,
+    regimeData,
+    regimeWeights,
+    regimeAdjustments,
+    finalWeights,
+    enabled,
+    cap
+  };
 }
 
-// Update and render dashboard state for Prompt 2
+// Task 5: Plain-language rationale generator for regime overlay changes
+function generateRegimeRationale(alloc) {
+  const { regimeData, regimeAdjustments, enabled, cap } = alloc;
+  const { bmAbove, bmPrice, bmSma200, bmTicker, countAbove, totalMonitored, breadthPct, regimeScore, impliedR, hasFullData } = regimeData;
+
+  if (!enabled) {
+    return `<strong>Tactical Overlay Status: OFF (Pure Strategic Baseline)</strong><br />
+    Portfolio bucket allocations strictly reflect your risk factor (R = ${portfolioState.inputs.riskFactor.toFixed(2)}). Toggling the overlay ON will apply a capped tactical tilt (up to ${(cap * 100).toFixed(0)}%) based on real-time market regime signals.`;
+  }
+
+  let bmStatusStr = bmAbove
+    ? `above its 200-day moving average${bmPrice > 0 ? ` ($${bmPrice.toFixed(2)} vs SMA200 $${bmSma200.toFixed(2)})` : ''}`
+    : `below its 200-day moving average${bmPrice > 0 ? ` ($${bmPrice.toFixed(2)} vs SMA200 $${bmSma200.toFixed(2)})` : ''}`;
+
+  let breadthStr = totalMonitored > 0
+    ? `${countAbove} of ${totalMonitored} monitored equities (${(breadthPct * 100).toFixed(1)}%) are trading above their 200-day SMA`
+    : `market breadth is estimated at ${(breadthPct * 100).toFixed(1)}% (awaiting full analysis run)`;
+
+  let regimePosture = 'neutral';
+  if (regimeScore >= 70) regimePosture = 'strong bullish momentum';
+  else if (regimeScore >= 50) regimePosture = 'moderate market strength';
+  else if (regimeScore >= 30) regimePosture = 'cautious / defensive tilt';
+  else regimePosture = 'severe market weakness / defensive stance';
+
+  let changes = [];
+  const bucketLabels = {
+    steady: 'Steady Compounders',
+    growth: 'High Growth',
+    cyclical: 'Cyclical',
+    defensive: 'Defensive / Income'
+  };
+
+  ['steady', 'growth', 'cyclical', 'defensive'].forEach(k => {
+    const adj = regimeAdjustments[k];
+    const adjPct = (adj * 100).toFixed(1);
+    if (adj > 0.0001) {
+      changes.push(`<strong>${bucketLabels[k]}</strong> (+${adjPct}%)`);
+    } else if (adj < -0.0001) {
+      changes.push(`<strong>${bucketLabels[k]}</strong> (${adjPct}%)`);
+    }
+  });
+
+  let changesText = changes.length > 0 ? changes.join(', ') : 'No net shift to strategic weights';
+  let dataNote = !hasFullData ? ' <em>(Run Portfolio Analysis to populate live market prices and breadth).</em>' : '';
+
+  return `
+    <strong>Tactical Regime Overlay Active (Cap ${(cap * 100).toFixed(0)}%):</strong><br />
+    Benchmark <strong>${bmTicker}</strong> is ${bmStatusStr}, and ${breadthStr}. 
+    This yields a composite market regime score of <strong>${regimeScore.toFixed(1)} / 100</strong> (implied R = ${impliedR.toFixed(2)}), signalling a <strong>${regimePosture}</strong> environment.
+    Applying a ${(cap * 100).toFixed(0)}% tactical overlay to baseline strategic weights adjusts allocations as follows: ${changesText}.${dataNote}
+  `;
+}
+
+// Update and render dashboard state for Section 2
 function updateDashboardState() {
-  const cap = calculateCapital();
+  const capData = calculateCapital();
   const riskSlider = document.getElementById('risk-factor');
   const R = riskSlider ? Number(riskSlider.value) : 0.5;
   portfolioState.inputs.riskFactor = R;
 
-  const weights = calculateBucketWeights(R);
-  const currency = portfolioState.inputs.currency;
+  // Read toggle and cap from DOM
+  const toggleEl = document.getElementById('regime-overlay-toggle');
+  const capInputEl = document.getElementById('regime-cap-input');
+  if (toggleEl) {
+    CONFIG.regimeOverlay.enabled = toggleEl.checked;
+  }
+  if (capInputEl) {
+    const customCap = Number(capInputEl.value) / 100;
+    if (!isNaN(customCap) && customCap >= 0 && customCap <= 0.5) {
+      CONFIG.regimeOverlay.cap = customCap;
+    }
+  }
 
-  // Update bucket amounts and weights in state
-  const targetVal = cap.targetPortfolioValue;
+  const alloc = calculateBucketAllocations(R);
+  const currency = portfolioState.inputs.currency;
+  const targetVal = capData.targetPortfolioValue;
+
+  // Store in portfolioState.buckets
   for (const key of ['steady', 'growth', 'cyclical', 'defensive']) {
-    portfolioState.buckets[key].finalWeight = weights[key];
-    portfolioState.buckets[key].amount = targetVal * weights[key];
+    portfolioState.buckets[key].strategicWeight = alloc.strategicWeights[key];
+    portfolioState.buckets[key].regimeAdjustment = alloc.regimeAdjustments[key];
+    portfolioState.buckets[key].finalWeight = alloc.finalWeights[key];
+    portfolioState.buckets[key].amount = targetVal * alloc.finalWeights[key];
+  }
+
+  // Update toggle status label in DOM
+  const toggleLabelEl = document.getElementById('regime-toggle-status-label');
+  if (toggleLabelEl) {
+    toggleLabelEl.textContent = alloc.enabled ? `Overlay: ON (${(alloc.cap * 100).toFixed(0)}% cap)` : 'Overlay: OFF';
   }
 
   // Render Waterfall
-  document.getElementById('wf-gross').textContent = formatCurrency(cap.gross, currency);
-  document.getElementById('wf-existing').textContent = formatCurrency(cap.existingValue, currency);
-  document.getElementById('wf-reserve').textContent = formatCurrency(cap.cashReserve, currency);
-  document.getElementById('wf-fees').textContent = formatCurrency(cap.provisionalFeeReserve, currency);
-  document.getElementById('wf-investable').textContent = formatCurrency(cap.investable, currency);
-  document.getElementById('wf-existing-add').textContent = formatCurrency(cap.existingValue, currency);
+  document.getElementById('wf-gross').textContent = formatCurrency(capData.gross, currency);
+  document.getElementById('wf-existing').textContent = formatCurrency(capData.existingValue, currency);
+  document.getElementById('wf-reserve').textContent = formatCurrency(capData.cashReserve, currency);
+  document.getElementById('wf-fees').textContent = formatCurrency(capData.provisionalFeeReserve, currency);
+  document.getElementById('wf-investable').textContent = formatCurrency(capData.investable, currency);
+  document.getElementById('wf-existing-add').textContent = formatCurrency(capData.existingValue, currency);
   document.getElementById('wf-target').textContent = formatCurrency(targetVal, currency);
 
-  // Render Stacked Bar & Breakdown List
+  // Render Regime Metrics Summary Bar
+  const metricsBarEl = document.getElementById('regime-metrics-bar');
+  if (metricsBarEl) {
+    const { bmAbove, bmPrice, bmSma200, bmTicker, countAbove, totalMonitored, breadthPct, regimeScore, impliedR } = alloc.regimeData;
+    metricsBarEl.innerHTML = `
+      <div>
+        <span style="color: #666;">Benchmark (${bmTicker}):</span><br />
+        <strong style="color: ${bmAbove ? '#2e7d32' : '#c62828'};">${bmAbove ? '▲ ABOVE SMA200' : '▼ BELOW SMA200'}</strong>
+        <span style="color: #555; font-size: 0.8rem;">(${bmPrice > 0 ? `$${bmPrice.toFixed(2)} vs SMA $${bmSma200.toFixed(2)}` : 'N/A'})</span>
+      </div>
+      <div>
+        <span style="color: #666;">Market Breadth:</span><br />
+        <strong>${totalMonitored > 0 ? `${countAbove} / ${totalMonitored}` : 'N/A'} Monitored &gt; SMA200</strong>
+        <span style="color: #555; font-size: 0.8rem;">(${(breadthPct * 100).toFixed(1)}%)</span>
+      </div>
+      <div>
+        <span style="color: #666;">Regime Score:</span><br />
+        <strong style="color: var(--accent); font-size: 1rem;">${regimeScore.toFixed(1)} / 100</strong>
+        <span style="color: #555; font-size: 0.8rem;">(Implied R = ${impliedR.toFixed(2)})</span>
+      </div>
+      <div>
+        <span style="color: #666;">Tactical Overlay Status:</span><br />
+        <strong style="color: ${alloc.enabled ? '#2e7d32' : '#666'};">${alloc.enabled ? `ACTIVE (${(alloc.cap * 100).toFixed(0)}% Cap)` : 'OFF (Pure Strategic)'}</strong>
+      </div>
+    `;
+  }
+
+  // Render Stacked Bar using Final Weights
   const barEl = document.getElementById('bucket-stacked-bar');
   const listEl = document.getElementById('bucket-breakdown-list');
 
@@ -293,34 +500,91 @@ function updateDashboardState() {
   if (barEl) {
     let barHtml = '';
     bucketMeta.forEach(b => {
-      const pct = (weights[b.key] * 100).toFixed(1);
+      const pct = (alloc.finalWeights[b.key] * 100).toFixed(1);
       barHtml += `<div title="${b.label}: ${pct}%" style="width: ${pct}%; background: ${b.color}; height: 100%; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.75rem; font-weight: bold; overflow: hidden; white-space: nowrap;">${pct > 8 ? pct + '%' : ''}</div>`;
     });
     barEl.innerHTML = barHtml;
   }
 
+  // Render Allocation Comparison Table
   if (listEl) {
-    let listHtml = '<div style="display: grid; gap: 0.5rem;">';
+    let tableHtml = `
+      <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; font-family: inherit;">
+        <thead>
+          <tr style="background: #e8e3d5; border-bottom: 2px solid var(--line); text-align: left;">
+            <th style="padding: 0.5rem 0.75rem;">Bucket</th>
+            <th style="padding: 0.5rem 0.75rem; text-align: right;">Strategic Weight</th>
+            <th style="padding: 0.5rem 0.75rem; text-align: right;">Regime Weight</th>
+            <th style="padding: 0.5rem 0.75rem; text-align: right;">Overlay Tilt</th>
+            <th style="padding: 0.5rem 0.75rem; text-align: right;">Final Allocation</th>
+            <th style="padding: 0.5rem 0.75rem; text-align: right;">Target Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+    `;
+
     bucketMeta.forEach(b => {
-      const wt = weights[b.key];
+      const stratPct = (alloc.strategicWeights[b.key] * 100).toFixed(1);
+      const regPct = (alloc.regimeWeights[b.key] * 100).toFixed(1);
+      const tiltVal = alloc.regimeAdjustments[b.key];
+      const tiltPct = (tiltVal * 100).toFixed(1);
+      const finalPct = (alloc.finalWeights[b.key] * 100).toFixed(1);
       const amt = portfolioState.buckets[b.key].amount;
       const purpose = portfolioState.buckets[b.key].purpose;
-      listHtml += `
-        <div style="display: flex; justify-content: space-between; align-items: center; background: #f4f3ef; padding: 0.5rem 0.75rem; border-radius: 3px;">
-          <div style="display: flex; align-items: center; gap: 0.5rem;">
-            <div style="width: 12px; height: 12px; background: ${b.color}; border-radius: 2px;"></div>
-            <div>
-              <strong>${b.label}</strong> <span style="font-size: 0.8rem; color: #666; font-style: italic;">(${purpose})</span>
+
+      let tiltBadge = `<span style="color: #666;">0.0%</span>`;
+      if (alloc.enabled) {
+        if (tiltVal > 0.0001) {
+          tiltBadge = `<span style="color: #2e7d32; font-weight: bold;">+${tiltPct}%</span>`;
+        } else if (tiltVal < -0.0001) {
+          tiltBadge = `<span style="color: #c62828; font-weight: bold;">${tiltPct}%</span>`;
+        }
+      }
+
+      tableHtml += `
+        <tr style="border-bottom: 1px solid var(--line);">
+          <td style="padding: 0.5rem 0.75rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <div style="width: 12px; height: 12px; background: ${b.color}; border-radius: 2px; flex-shrink: 0;"></div>
+              <div>
+                <strong>${b.label}</strong>
+                <div style="font-size: 0.75rem; color: #666; font-style: italic;">${purpose}</div>
+              </div>
             </div>
-          </div>
-          <div style="text-align: right; font-family: monospace;">
-            <strong>${(wt * 100).toFixed(1)}%</strong> <span style="color: #555; margin-left: 0.5rem;">(${formatCurrency(amt, currency)})</span>
-          </div>
-        </div>
+          </td>
+          <td style="padding: 0.5rem 0.75rem; text-align: right; font-family: monospace;">${stratPct}%</td>
+          <td style="padding: 0.5rem 0.75rem; text-align: right; font-family: monospace; color: #555;">${regPct}%</td>
+          <td style="padding: 0.5rem 0.75rem; text-align: right; font-family: monospace;">${tiltBadge}</td>
+          <td style="padding: 0.5rem 0.75rem; text-align: right; font-family: monospace; font-weight: bold; font-size: 0.95rem;">${finalPct}%</td>
+          <td style="padding: 0.5rem 0.75rem; text-align: right; font-family: monospace; font-weight: bold; color: var(--ink);">${formatCurrency(amt, currency)}</td>
+        </tr>
       `;
     });
-    listHtml += '</div>';
-    listEl.innerHTML = listHtml;
+
+    const totalAmt = bucketMeta.reduce((sum, b) => sum + portfolioState.buckets[b.key].amount, 0);
+
+    tableHtml += `
+        </tbody>
+        <tfoot>
+          <tr style="background: #e8e3d5; font-weight: bold; border-top: 2px solid var(--line);">
+            <td style="padding: 0.5rem 0.75rem;">Total Portfolio</td>
+            <td style="padding: 0.5rem 0.75rem; text-align: right; font-family: monospace;">100.0%</td>
+            <td style="padding: 0.5rem 0.75rem; text-align: right; font-family: monospace; color: #555;">100.0%</td>
+            <td style="padding: 0.5rem 0.75rem; text-align: right; font-family: monospace;">0.0%</td>
+            <td style="padding: 0.5rem 0.75rem; text-align: right; font-family: monospace; font-size: 0.95rem;">100.0%</td>
+            <td style="padding: 0.5rem 0.75rem; text-align: right; font-family: monospace; font-size: 0.95rem;">${formatCurrency(totalAmt, currency)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    `;
+
+    listEl.innerHTML = tableHtml;
+  }
+
+  // Render Rationale Box
+  const rationaleEl = document.getElementById('regime-rationale-box');
+  if (rationaleEl) {
+    rationaleEl.innerHTML = generateRegimeRationale(alloc);
   }
 
   if (portfolioState.stocks && portfolioState.stocks.length > 0) {
@@ -384,6 +648,33 @@ document.addEventListener('DOMContentLoaded', () => {
       el.addEventListener('change', updateDashboardState);
     }
   });
+
+  // Tactical Regime Overlay listeners
+  const regimeToggle = document.getElementById('regime-overlay-toggle');
+  if (regimeToggle) {
+    regimeToggle.checked = !!CONFIG.regimeOverlay.enabled;
+    regimeToggle.addEventListener('change', () => {
+      CONFIG.regimeOverlay.enabled = regimeToggle.checked;
+      updateDashboardState();
+    });
+  }
+
+  const regimeCapInput = document.getElementById('regime-cap-input');
+  if (regimeCapInput) {
+    regimeCapInput.value = (CONFIG.regimeOverlay.cap * 100).toFixed(0);
+    const updateCap = () => {
+      const val = Number(regimeCapInput.value) / 100;
+      if (!isNaN(val) && val >= 0 && val <= 0.5) {
+        CONFIG.regimeOverlay.cap = val;
+        updateDashboardState();
+      }
+    };
+    regimeCapInput.addEventListener('input', updateCap);
+    regimeCapInput.addEventListener('change', updateCap);
+  }
+
+  // Initial dashboard state render
+  updateDashboardState();
 
   // Weighting method radio buttons listener
   const weightingRadios = document.querySelectorAll('input[name="weightingMethod"]');

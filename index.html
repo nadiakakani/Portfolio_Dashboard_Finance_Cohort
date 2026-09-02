@@ -143,11 +143,43 @@
         <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 1px solid var(--ink); padding-top: 0.25rem; font-size: 1rem;"><span>(=) Total Portfolio Value (capital + holdings):</span> <strong id="wf-target">$472,000.00</strong></div>
       </div>
 
-      <h3>Strategic Bucket Weights (<span id="weight-mode-label">Formula-Derived from R=0.5</span>)</h3>
+      <!-- TACTICAL REGIME OVERLAY SUB-PANEL -->
+      <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin-bottom: 1.25rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+          <div>
+            <h3 style="margin: 0; font-size: 1.05rem;">Tactical Regime Overlay</h3>
+            <p class="field-hint" style="margin: 0.2rem 0 0;">Capped tactical tilt based on benchmark (SPY) SMA200 and market breadth. Default OFF for baseline comparison.</p>
+          </div>
+          <div style="display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap;">
+            <div style="display: flex; align-items: center; gap: 0.4rem;">
+              <label for="regime-cap-input" style="margin: 0; font-size: 0.85rem; font-weight: bold;">Cap (%):</label>
+              <input id="regime-cap-input" type="number" min="0" max="30" step="1" value="10" style="width: 65px; padding: 0.25rem 0.4rem; font-size: 0.85rem; border: 1px solid var(--line); border-radius: 4px;" />
+            </div>
+            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; background: #e8e3d5; padding: 0.4rem 0.75rem; border-radius: 4px; border: 1px solid var(--line); user-select: none;">
+              <input type="checkbox" id="regime-overlay-toggle" style="width: auto; cursor: pointer;" />
+              <span id="regime-toggle-status-label" style="font-weight: bold; font-size: 0.9rem;">Overlay: OFF</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- REGIME METRICS SUMMARY BAR -->
+        <div id="regime-metrics-bar" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px dashed var(--line); display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; font-size: 0.85rem;">
+          <!-- Filled dynamically -->
+        </div>
+      </div>
+
+      <h3>Portfolio Bucket Allocation (<span id="weight-mode-label">Formula-Derived from R=0.5</span>)</h3>
       <div id="bucket-stacked-bar" style="display: flex; height: 32px; border-radius: 4px; overflow: hidden; border: 1px solid var(--line); margin: 0.75rem 0;">
         <!-- Filled dynamically -->
       </div>
-      <div id="bucket-breakdown-list" style="display: grid; gap: 0.5rem; margin-top: 0.75rem; font-size: 0.9rem;">
+      
+      <!-- BUCKET ALLOCATION BREAKDOWN LIST & COMPARISON TABLE -->
+      <div id="bucket-breakdown-list" style="margin-top: 0.75rem; overflow-x: auto;">
+        <!-- Filled dynamically -->
+      </div>
+
+      <!-- PLAIN-LANGUAGE RATIONALE BOX -->
+      <div id="regime-rationale-box" style="margin-top: 1rem; padding: 0.85rem 1rem; background: #faf9f6; border-left: 4px solid var(--accent); border-radius: 4px; font-size: 0.88rem; line-height: 1.5; color: var(--ink);">
         <!-- Filled dynamically -->
       </div>
     </section>
