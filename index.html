@@ -190,6 +190,14 @@
           </div>
 
           <div class="field-group">
+            <label for="alphavantage-key">Alpha Vantage API Key (Earnings Transcripts)</label>
+            <div class="key-input-wrapper" style="display: flex; align-items: center; gap: 0.5rem;">
+              <input id="alphavantage-key" type="password" placeholder="Alpha Vantage API Key" style="flex: 1;" />
+              <span id="alphavantage-note" class="env-note" style="display:none; color: #2e7d32; font-size: 0.8rem; font-family: monospace; white-space: nowrap;">✓ loaded from environment</span>
+            </div>
+          </div>
+
+          <div class="field-group">
             <label for="openrouter-model-select">OpenRouter LLM Model (Structured Outputs Supported)</label>
             <div id="openrouter-model-container">
               <select id="openrouter-model-select" style="width: 100%; padding: 0.4rem; border: 1px solid var(--line); border-radius: 4px; font-family: monospace; font-size: 0.85rem;">
@@ -257,6 +265,16 @@
       <p class="field-hint">Rebalance order proposals with trade sides (BUY, SELL, HOLD, NO ACTION, BLOCKED), quantities, reference prices, estimated costs, required execution days, and binding constraints.</p>
       <div id="proposed-trades-container" style="margin-top: 1rem;">
         <p class="placeholder">Run analysis to see Proposed Trades table.</p>
+      </div>
+    </section>
+
+    <!-- EARNINGS CALL & FUNDAMENTAL OVERLAY PANEL -->
+    <section class="panel" id="earnings-analysis-panel" style="margin-top: 1.5rem;">
+      <h2 title="Primary source management & analyst transcripts (Alpha Vantage) or quarterly beat/miss statistics (Finnhub) for top 3 holdings by portfolio weight">Earnings Call & Fundamental Analysis (Top 3 Holdings Qualitative Overlay)</h2>
+      <p class="field-hint">Primary source management & analyst call transcripts (Alpha Vantage) or quarterly beat/miss statistics (Finnhub) for the top 3 portfolio holdings by weight. Qualitative overlay only — does not alter composite quantitative scores.</p>
+      
+      <div id="earnings-analysis-container" style="margin-top: 1rem;">
+        <p class="placeholder">Run analysis to perform earnings call analysis on top 3 holdings.</p>
       </div>
     </section>
 
