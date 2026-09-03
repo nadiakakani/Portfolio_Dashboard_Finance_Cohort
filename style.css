@@ -219,12 +219,90 @@ html, body {
   background-color: #f4f3ef;
 }
 
-/* Numeric cell padding & alignment */
+/* Table Numeric Alignment & Formatting */
+table {
+  font-variant-numeric: tabular-nums;
+}
+
 .diag-table th.num-cell,
-.diag-table td.num-cell {
-  text-align: right;
+.diag-table td.num-cell,
+.num-cell {
+  text-align: right !important;
   padding: 4px 6px;
   font-family: 'Menlo', 'Courier New', monospace, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Verdict Row Styling */
+.verdict-row {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 0.75rem;
+  background: #fdfcf7;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.verdict-item {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  border-right: 1px solid var(--line);
+  padding-right: 0.75rem;
+}
+
+.verdict-item:last-child {
+  border-right: none;
+  padding-right: 0;
+}
+
+.verdict-label {
+  font-size: 0.72rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  margin-bottom: 0.3rem;
+  white-space: nowrap;
+}
+
+.verdict-value {
+  font-size: 1.3rem;
+  font-weight: bold;
+  font-family: 'Menlo', 'Courier New', monospace, sans-serif;
+  color: var(--ink);
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+
+.verdict-caption {
+  font-size: 0.75rem;
+  color: #666;
+  margin-top: 0.25rem;
+  line-height: 1.2;
+}
+
+@media (max-width: 992px) {
+  .verdict-row {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .verdict-item:nth-child(3n) {
+    border-right: none;
+  }
+}
+
+@media (max-width: 576px) {
+  .verdict-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .verdict-item {
+    border-right: 1px solid var(--line);
+  }
+  .verdict-item:nth-child(2n) {
+    border-right: none;
+  }
 }
 
 /* Responsive toggle weights columns below 900px */

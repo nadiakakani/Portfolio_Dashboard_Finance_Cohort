@@ -412,6 +412,83 @@ function generateRegimeRationale(alloc) {
   `;
 }
 
+function renderVerdictRow() {
+  const container = document.getElementById('verdict-row');
+  if (!container) return;
+
+  const currency = portfolioState.inputs.currency || "USD";
+  const targetVal = portfolioState.capital?.targetPortfolioValue || 500000;
+  const deployed = portfolioState.capital?.deployed || 0;
+  const undeployed = portfolioState.capital?.undeployed || (targetVal - deployed);
+  const deployedPct = targetVal > 0 ? (deployed / targetVal) * 100 : 0;
+
+  // Holdings count: stocks with final position > 0
+  const stocks = portfolioState.stocks || [];
+  const activeHoldings = stocks.filter(s => (s.executablePositionUsd || 0) > 0).length;
+  const totalScreened = stocks.length > 0 ? stocks.length : 21;
+
+  // Volatility & vs Equal Weight
+  const currentMethod = portfolioState.inputs.weightingMethod || "inverseVolatility";
+  const compCurrent = portfolioState.comparison?.[currentMethod] || { volSleeve: 0, volTotal: 0 };
+  const compEq = portfolioState.comparison?.['equalWeight'] || { volSleeve: 0, volTotal: 0 };
+
+  const sleeveVol = compCurrent.volSleeve || portfolioState.portfolioVolatilitySleeve || 0;
+  const eqSleeveVol = compEq.volSleeve || 0;
+
+  const volDisplay = sleeveVol > 0 ? `${(sleeveVol * 100).toFixed(1)}%` : '0.0%';
+  
+  // vs Equal Weight (signed difference in percentage points)
+  let vsEqDisplay = '0.00%';
+  if (sleeveVol > 0 && eqSleeveVol > 0) {
+    const diffPp = (sleeveVol - eqSleeveVol) * 100;
+    const sign = diffPp > 0 ? '+' : '';
+    vsEqDisplay = `${sign}${diffPp.toFixed(2)}%`;
+  }
+
+  // Est Transaction Cost
+  const cost = portfolioState.capital?.estimatedActualCost || 0;
+  const costPct = deployed > 0 ? (cost / deployed) * 100 : 0;
+  const costDisplay = formatCurrency(cost, currency);
+
+  container.innerHTML = `
+    <div class="verdict-item">
+      <div class="verdict-label">Total Portfolio Value</div>
+      <div class="verdict-value">${formatCurrency(targetVal, currency)}</div>
+      <div class="verdict-caption">Total Target Value</div>
+    </div>
+
+    <div class="verdict-item">
+      <div class="verdict-label">Deployed %</div>
+      <div class="verdict-value">${deployedPct.toFixed(1)}%</div>
+      <div class="verdict-caption">${formatCurrency(undeployed, currency)} undeployed</div>
+    </div>
+
+    <div class="verdict-item">
+      <div class="verdict-label">Holdings</div>
+      <div class="verdict-value">${activeHoldings}</div>
+      <div class="verdict-caption">of ${totalScreened} screened</div>
+    </div>
+
+    <div class="verdict-item">
+      <div class="verdict-label">Volatility</div>
+      <div class="verdict-value">${volDisplay}</div>
+      <div class="verdict-caption">equity sleeve, 60-day</div>
+    </div>
+
+    <div class="verdict-item">
+      <div class="verdict-label">vs Equal Weight</div>
+      <div class="verdict-value">${vsEqDisplay}</div>
+      <div class="verdict-caption">lower volatility</div>
+    </div>
+
+    <div class="verdict-item">
+      <div class="verdict-label">Est. Transaction Cost</div>
+      <div class="verdict-value">${costDisplay}</div>
+      <div class="verdict-caption">${costPct.toFixed(2)}% of deployed capital</div>
+    </div>
+  `;
+}
+
 // Update and render dashboard state for Section 2
 function updateDashboardState() {
   const capData = calculateCapital();
@@ -443,6 +520,9 @@ function updateDashboardState() {
     portfolioState.buckets[key].finalWeight = alloc.finalWeights[key];
     portfolioState.buckets[key].amount = targetVal * alloc.finalWeights[key];
   }
+
+  // Update Verdict Row
+  renderVerdictRow();
 
   // Update toggle status label in DOM
   const toggleLabelEl = document.getElementById('regime-toggle-status-label');
@@ -4993,7 +5073,7 @@ function computeRiskScoreAndFinal(portfolioState) {
                   <th class="num-cell" style="padding: 6px;" title="Annualised Volatility & Risk Score">Volatility / Risk</th>
                   <th class="num-cell" style="padding: 6px;" title="Quality Gate Score vs Bucket Threshold">Quality Gate</th>
                   <th class="num-cell" style="padding: 6px;" title="Model allocation weight before caps">Model Weight</th>
-                  <th class="num-cell" style="padding: 6px;" title="Final executable allocation weight after caps">Executable Weight</th>
+                  <th class="num-cell" style="padding: 6px;" title="Final allocation weight after caps">Final Weight</th>
                   <th style="text-align: left; padding: 6px;" title="Binding constraint limiting position size">Binding Constraint</th>
                   <th style="text-align: center; padding: 6px;">Actions</th>
                 </tr>
@@ -5064,7 +5144,7 @@ function computeRiskScoreAndFinal(portfolioState) {
                       <strong>${formatCurrency(s.constraintLadder?.cappedDaysUsd || s.desiredPositionUsd || 0, currency)}</strong>
                     </div>
                     <div style="padding: 0.4rem; background: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px;">
-                      <div style="color: #2e7d32; font-size: 0.7rem;">6. Whole Share Executable</div>
+                      <div style="color: #2e7d32; font-size: 0.7rem;">6. Whole Share Final Position</div>
                       <strong>${formatCurrency(s.executablePositionUsd || 0, currency)}</strong> (${s.targetShares || 0} sh)
                     </div>
                   </div>
@@ -5182,14 +5262,14 @@ function computeRiskScoreAndFinal(portfolioState) {
         labels: labels,
         datasets: [
           {
-            label: 'Model Weight (%) [Desired]',
+            label: 'Target Weight (%)',
             data: modelData,
             backgroundColor: modelBgs,
             borderColor: items.map(i => (bucketColors[i.bucket] || bucketColors.steady).border),
             borderWidth: 1
           },
           {
-            label: 'Executable Weight (%) [Final]',
+            label: 'Final Weight (%)',
             data: execData,
             backgroundColor: execBgs,
             borderWidth: 1
@@ -5204,7 +5284,7 @@ function computeRiskScoreAndFinal(portfolioState) {
           legend: { position: 'top' },
           tooltip: {
             callbacks: {
-              footer: () => 'Model Weight = within-bucket weight * bucket weight. Executable Weight = after position caps, liquidity limits, and whole shares.'
+              footer: () => 'Target Weight = within-bucket weight * bucket weight. Final Weight = after position caps, liquidity limits, and whole shares.'
             }
           }
         },
@@ -5468,7 +5548,7 @@ function computeRiskScoreAndFinal(portfolioState) {
       bannerContainer.innerHTML = `
         <div style="background: #e8f5e9; border: 1px solid #2e7d32; color: #1b5e20; padding: 0.75rem 1rem; border-radius: 4px; font-size: 0.9rem;">
           <div style="font-weight: bold; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;">
-            <span>✓ ALL A10 PORTFOLIO INVARIANTS PASSED</span>
+            <span>✓ ALL PORTFOLIO INVARIANTS PASSED</span>
           </div>
           <p style="margin: 0.25rem 0 0; font-size: 0.85rem; color: #2e7d32;">
             Verified: Capital conservation, 10% stock cap, 35% bucket cap, liquidity capacity limits, execution days cap, empty bucket cash rules, and transaction cost cap.
@@ -5572,7 +5652,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     let posHtml = `
       <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
-          <h3 style="margin: 0; font-size: 1rem; color: var(--ink);">Executable Positions & Trade Proposals</h3>
+          <h3 style="margin: 0; font-size: 1rem; color: var(--ink);">Final Positions & Trade Proposals</h3>
           <span style="font-size: 0.8rem; background: #fff3e0; color: #e65100; padding: 0.2rem 0.5rem; border-radius: 3px; font-weight: bold; border: 1px solid #ffe0b2;">
             ⚠️ Proposals Only &mdash; Market Impact Uncalibrated (Y=1.0)
           </span>
@@ -5587,7 +5667,7 @@ function computeRiskScoreAndFinal(portfolioState) {
                 <th style="text-align: left; padding: 6px;">Status</th>
                 <th style="text-align: left; padding: 6px;">Liquidity Tier</th>
                 <th class="num-cell" style="padding: 6px;">Existing Holding</th>
-                <th class="num-cell" style="padding: 6px; background: #e8f5e9; font-weight: bold;">Model Position ($ & sh)</th>
+                <th class="num-cell" style="padding: 6px; background: #e8f5e9; font-weight: bold;">Final Position ($ & sh)</th>
                 <th class="num-cell" style="padding: 6px;">Trade Proposal</th>
                 <th style="text-align: center; padding: 6px;">Proposal Side</th>
                 <th class="num-cell" style="padding: 6px;">Order % ADV</th>

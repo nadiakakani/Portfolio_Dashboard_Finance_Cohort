@@ -3,17 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>GenAI Finance Dashboard</title>
-  <meta name="description" content="GenAI-powered portfolio construction and rebalancing dashboard for MBA assignment" />
+  <title>Nadia Finance Dashboard</title>
+  <meta name="description" content="Nadia Finance Dashboard - portfolio construction and rebalancing" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <header class="app-header">
-    <h1>GenAI Finance Dashboard</h1>
-    <p class="subtitle">Portfolio Construction & Rebalancing (Educational MBA Prototype)</p>
+    <h1>Nadia Finance Dashboard</h1>
   </header>
 
   <main class="app-main">
+    <!-- VERDICT ROW AT VERY TOP OF PAGE -->
+    <div id="verdict-row" class="verdict-row">
+      <!-- Filled dynamically by renderVerdictRow() -->
+    </div>
+
     <!-- TABS NAVIGATION -->
     <nav class="tabs" style="display: flex; gap: 1rem; border-bottom: 2px solid var(--line); margin-bottom: 1.5rem; padding-bottom: 0;">
       <button id="btn-tab-dashboard" class="tab-btn active">Dashboard</button>
@@ -284,8 +288,8 @@
 
     <!-- WEIGHTS CHART PANEL -->
     <section class="panel" id="weights-chart-panel" style="margin-top: 1.5rem;">
-      <h2 title="Horizontal bar comparison of Model Weight (Desired) vs Executable Weight per stock, sorted by weight and coloured by bucket">6. Model Weight vs. Executable Weight Allocation Chart</h2>
-      <p class="field-hint">Compares Model Weight (Desired) against Final Executable Weight per stock to visually highlight capacity and constraint reductions.</p>
+      <h2 title="Horizontal bar comparison of Target Weight vs Final Weight per stock, sorted by weight and coloured by bucket">6. Target vs Final Weights</h2>
+      <p class="field-hint">Compares Target Weight against Final Weight per stock to visually highlight capacity and constraint reductions.</p>
       <div id="weights-chart-container" style="margin-top: 1rem; position: relative; min-height: 350px;">
         <canvas id="weights-chart-canvas"></canvas>
       </div>
@@ -302,7 +306,7 @@
 
     <!-- EARNINGS CALL & FUNDAMENTAL OVERLAY PANEL -->
     <section class="panel" id="earnings-analysis-panel" style="margin-top: 1.5rem;">
-      <h2 title="Primary source management & analyst transcripts (Alpha Vantage) or quarterly beat/miss statistics (Finnhub) for top 3 holdings by portfolio weight">Earnings Call & Fundamental Analysis (Top 3 Holdings Qualitative Overlay)</h2>
+      <h2 title="Primary source management & analyst transcripts (Alpha Vantage) or quarterly beat/miss statistics (Finnhub) for top 3 holdings by portfolio weight">Earnings Review — Top 3 Holdings</h2>
       <p class="field-hint">Primary source management & analyst call transcripts (Alpha Vantage) or quarterly beat/miss statistics (Finnhub) for the top 3 portfolio holdings by weight. Qualitative overlay only — does not alter composite quantitative scores.</p>
       
       <div id="earnings-analysis-container" style="margin-top: 1rem;">
@@ -322,7 +326,7 @@
 
     <!-- CORRELATION HEATMAP PANEL -->
     <section class="panel" id="correlation-heatmap-panel" style="margin-top: 1.5rem;">
-      <h2 title="Pairwise Pearson correlation matrix computed from historical daily returns of selected portfolio holdings">8. Selected Holdings Correlation Heatmap</h2>
+      <h2 title="Pairwise Pearson correlation matrix computed from historical daily returns of selected portfolio holdings">8. Holdings Correlation</h2>
       <div id="correlation-heatmap-container" style="margin-top: 1rem;">
         <p class="placeholder">Run analysis to compute selected holdings correlation matrix.</p>
       </div>
@@ -330,16 +334,16 @@
 
     <!-- WARNINGS & HARD BLOCKS PANEL -->
     <section class="panel" id="warnings-blocks-panel" style="margin-top: 1.5rem;">
-      <h2 title="Soft portfolio warnings and collapsed red hard blocks audit trail">9. Warnings & Hard Blocks Audit</h2>
+      <h2 title="Soft portfolio warnings and collapsed red hard blocks audit trail">9. Warnings and Exclusions</h2>
       <div id="warnings-blocks-container" style="margin-top: 1rem;">
-        <p class="placeholder">Run analysis to see warnings and hard blocks audit.</p>
+        <p class="placeholder">Run analysis to see warnings and exclusions audit.</p>
       </div>
     </section>
 
     <!-- MODEL SIZING & WEIGHTING METHOD COMPARISON PANEL -->
     <section class="panel" id="comparison-sizing-panel" style="margin-top: 1.5rem;">
-      <h2>10. Model Sizing & Weighting Method Comparison (Model Wants)</h2>
-      <p class="field-hint">Sizes within-bucket allocations across qualifiers before execution caps/liquidity limits (Prompt 11).</p>
+      <h2>10. Target Weights Before Limits</h2>
+      <p class="field-hint">Sizes within-bucket allocations across qualifiers before execution caps and liquidity limits.</p>
       
       <div id="method-comparison-container" style="margin-top: 1rem;">
         <p class="placeholder">Run analysis to see weighting method comparison.</p>
@@ -352,20 +356,20 @@
 
     <!-- EXECUTABLE PORTFOLIO, INCREMENTAL ORDERS, COSTS & CONSTRAINTS PANEL -->
     <section class="panel" id="executable-portfolio-panel" style="margin-top: 1.5rem;">
-      <h2>11. Executable Portfolio, Capital Reconciliation & Invariants (A6.8–A6.12, A10)</h2>
-      <p class="field-hint">Enforces position caps (10% stock, 35% bucket), liquidity capacity limits, transaction costs, undeployed capital hierarchy, and A10 invariant verification.</p>
+      <h2>11. Final Portfolio & Capital Reconciliation</h2>
+      <p class="field-hint">Enforces position caps (10% stock, 35% bucket), liquidity capacity limits, transaction costs, undeployed capital hierarchy, and invariant verification.</p>
       
       <!-- Invariant Verification Banner -->
       <div id="invariant-banner-container" style="margin-top: 1rem;"></div>
 
       <!-- Capital & Fee Reconciliation Summary Waterfall -->
       <div id="executable-summary-container" style="margin-top: 1rem;">
-        <p class="placeholder">Run analysis to see executable portfolio capital reconciliation and cost summary.</p>
+        <p class="placeholder">Run analysis to see final portfolio capital reconciliation and cost summary.</p>
       </div>
 
       <!-- Executable Positions & Incremental Orders Table -->
       <div id="executable-positions-container" style="margin-top: 1.5rem;">
-        <p class="placeholder">Run analysis to see executable positions table.</p>
+        <p class="placeholder">Run analysis to see final positions table.</p>
       </div>
     </section>
     </div> <!-- END TAB DASHBOARD -->
@@ -480,7 +484,7 @@
   </main>
 
   <footer class="app-footer" id="app-footer">
-    <!-- Disclaimer rendered by main.js -->
+    <p style="font-size: 0.8rem; color: #8a8577; text-align: center; margin: 1.5rem 0 1rem;">Educational prototype — not investment advice</p>
   </footer>
 
   <script type="module" src="./main.js"></script>
