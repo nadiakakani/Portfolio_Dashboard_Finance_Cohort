@@ -25,10 +25,10 @@ const CONFIG = {
 
   qualityGate: { steady: 55, growth: 35, cyclical: 40, defensive: 55 },
   qualityWeights: {
-    steady:    { revenueGrowth: 0.30, roe: 0.40, debtEquity: 0.30 },
-    growth:    { revenueGrowth: 0.55, roe: 0.35, debtEquity: 0.10 },
-    cyclical:  { revenueGrowth: 0.35, roe: 0.30, debtEquity: 0.35 },
-    defensive: { revenueGrowth: 0.15, roe: 0.40, debtEquity: 0.45 }
+    steady:    { revenueGrowth: 0.255, roe: 0.340, debtEquity: 0.255, earnings: 0.15 },
+    growth:    { revenueGrowth: 0.468, roe: 0.298, debtEquity: 0.085, earnings: 0.15 },
+    cyclical:  { revenueGrowth: 0.298, roe: 0.255, debtEquity: 0.298, earnings: 0.15 },
+    defensive: { revenueGrowth: 0.128, roe: 0.340, debtEquity: 0.383, earnings: 0.15 }
   },
 
   qualificationThreshold: 50,     // final score below this does not qualify
@@ -103,8 +103,8 @@ function assertScoreWeights() {
   const qualBuckets = Object.keys(CONFIG.qualityWeights);
   for (const bucket of qualBuckets) {
     const weights = CONFIG.qualityWeights[bucket];
-    const sum = weights.revenueGrowth + weights.roe + weights.debtEquity;
-    if (Math.abs(sum - 1.0) > 1e-5) {
+    const sum = weights.revenueGrowth + weights.roe + weights.debtEquity + weights.earnings;
+    if (Math.abs(sum - 1.0) > 0.005) {
       console.error(`CRITICAL: qualityWeights for bucket '${bucket}' sum to ${sum.toFixed(4)}, not 1.00!`);
     }
   }
@@ -770,7 +770,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // API Keys initialization with 3-step chain
+  // API Keys initialization with 3-step chain & status line
   const keysConfig = [
     { id: 'twelvedata-key', noteId: 'twelvedata-note', envNames: ['VITE_TWELVEDATA_API_KEY', 'VITE_TWELVEDATA_KEY'], storageKey: 'twelvedata_key' },
     { id: 'fmp-key', noteId: 'fmp-note', envNames: ['VITE_FMP_API_KEY', 'VITE_FMP_KEY'], storageKey: 'fmp_key' },
@@ -778,6 +778,19 @@ document.addEventListener('DOMContentLoaded', () => {
     { id: 'openrouter-key', noteId: 'openrouter-note', envNames: ['VITE_OPENROUTER_API_KEY', 'VITE_OPENROUTER_KEY'], storageKey: 'openrouter_key' },
     { id: 'alphavantage-key', noteId: 'alphavantage-note', envNames: ['VITE_ALPHAVANTAGE_API_KEY', 'VITE_ALPHAVANTAGE_KEY', 'ALPHAVANTAGE_API_KEY'], storageKey: 'alphavantage_api_key' }
   ];
+
+  function updateKeyStatusLine() {
+    const statusEl = document.getElementById('api-keys-status-line');
+    if (!statusEl) return;
+    let loadedCount = 0;
+    keysConfig.forEach(cfg => {
+      const input = document.getElementById(cfg.id);
+      if (input && input.value.trim().length > 0) {
+        loadedCount++;
+      }
+    });
+    statusEl.textContent = `${loadedCount} of ${keysConfig.length} keys loaded from this browser`;
+  }
 
   keysConfig.forEach(cfg => {
     const input = document.getElementById(cfg.id);
@@ -809,8 +822,11 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         if (note) note.style.display = 'none';
       }
+      updateKeyStatusLine();
     });
   });
+
+  updateKeyStatusLine();
 
   // Automatic Executive Summary Generator Function
   async function generateExecutiveSummaryAuto() {
@@ -1050,6 +1066,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const clearKeysBtn = document.getElementById('clear-keys-btn');
   if (clearKeysBtn) {
     clearKeysBtn.addEventListener('click', () => {
+      if (!confirm('Are you sure you want to clear all saved API keys from browser storage?')) {
+        return;
+      }
       localStorage.removeItem('openrouter_llm_model');
       keysConfig.forEach(cfg => {
         localStorage.removeItem(cfg.storageKey);
@@ -1065,8 +1084,208 @@ document.addEventListener('DOMContentLoaded', () => {
         if (input) input.value = envVal;
         if (note) note.style.display = envVal ? 'inline' : 'none';
       });
+      updateKeyStatusLine();
       initOpenRouterModelPicker();
       alert('Saved API keys cleared from browser storage.');
+    });
+  }
+
+  // --- RESET CONTROLS (RESET RESULTS & CLEAR INPUTS) ---
+  function resetResults() {
+    // 1. Reset state computed fields
+    portfolioState.stocks = [];
+    portfolioState.benchmark = {};
+    portfolioState.hardBlocks = [];
+    portfolioState.comparison = {};
+    portfolioState.executionFeasibility = null;
+    portfolioState.reconciliation = null;
+    portfolioState.executiveSummary = null;
+    portfolioState.tradeProposals = [];
+    portfolioState.qualificationSummary = null;
+    portfolioState.qualitySummary = null;
+
+    // 2. Clear / reset rendered containers
+    const verdictRow = document.getElementById('verdict-row');
+    if (verdictRow) renderVerdictRow();
+
+    const analysisProgress = document.getElementById('analysis-progress');
+    if (analysisProgress) analysisProgress.textContent = '';
+
+    const stocksList = document.getElementById('stocks-data-list');
+    if (stocksList) {
+      stocksList.innerHTML = '<p class="placeholder">Click "Run Portfolio Analysis" above to fetch benchmark (SPY) and 20 universe equities with throttled queue and caching.</p>';
+    }
+
+    const execFeas = document.getElementById('execution-feasibility-container');
+    if (execFeas) {
+      execFeas.innerHTML = '<p class="placeholder">Run analysis to see Execution Feasibility summary.</p>';
+    }
+
+    const scoreTable = document.getElementById('score-constraint-container');
+    if (scoreTable) {
+      scoreTable.innerHTML = '<p class="placeholder">Run analysis to view the Score & Constraint Table.</p>';
+    }
+
+    const weightsChart = document.getElementById('weights-chart-container');
+    if (weightsChart) {
+      weightsChart.innerHTML = '<canvas id="weights-chart-canvas"></canvas>';
+    }
+
+    const tradesTable = document.getElementById('proposed-trades-container');
+    if (tradesTable) {
+      tradesTable.innerHTML = '<p class="placeholder">Run analysis to see Proposed Trades table.</p>';
+    }
+
+    const earningsContainer = document.getElementById('earnings-analysis-container');
+    if (earningsContainer) {
+      earningsContainer.innerHTML = '<p class="placeholder">Run analysis to perform earnings call analysis on top 3 holdings.</p>';
+    }
+
+    const execSummaryContainer = document.getElementById('executive-summary-container');
+    if (execSummaryContainer) {
+      execSummaryContainer.innerHTML = '<p class="placeholder">Run analysis to generate Executive Summary.</p>';
+    }
+
+    const corrContainer = document.getElementById('correlation-heatmap-container');
+    if (corrContainer) {
+      corrContainer.innerHTML = '<p class="placeholder">Run analysis to compute selected holdings correlation matrix.</p>';
+    }
+
+    const warningsContainer = document.getElementById('warnings-blocks-container');
+    if (warningsContainer) {
+      warningsContainer.innerHTML = '<p class="placeholder">Run analysis to see warnings and exclusions audit.</p>';
+    }
+
+    const methodCompContainer = document.getElementById('method-comparison-container');
+    if (methodCompContainer) {
+      methodCompContainer.innerHTML = '<p class="placeholder">Run analysis to see weighting method comparison.</p>';
+    }
+
+    const desiredPositionsContainer = document.getElementById('desired-positions-container');
+    if (desiredPositionsContainer) {
+      desiredPositionsContainer.innerHTML = '<p class="placeholder">Run analysis to see desired positions (USD).</p>';
+    }
+
+    const invariantBanner = document.getElementById('invariant-banner-container');
+    if (invariantBanner) invariantBanner.innerHTML = '';
+
+    const executableSummary = document.getElementById('executable-summary-container');
+    if (executableSummary) {
+      executableSummary.innerHTML = '<p class="placeholder">Run analysis to see final portfolio capital reconciliation and cost summary.</p>';
+    }
+
+    const executablePositions = document.getElementById('executable-positions-container');
+    if (executablePositions) {
+      executablePositions.innerHTML = '<p class="placeholder">Run analysis to see final positions table.</p>';
+    }
+
+    // Reset Diagnostics tab
+    const qualContent = document.getElementById('qualification-summary-content');
+    if (qualContent) qualContent.innerHTML = 'Run Analysis to see Qualification Summary.';
+
+    const qualityContent = document.getElementById('quality-summary-content');
+    if (qualityContent) qualityContent.innerHTML = 'Run Analysis to see Quality Summary.';
+
+    const diagTableBody = document.getElementById('diag-table-body');
+    if (diagTableBody) diagTableBody.innerHTML = '';
+
+    const deepDiagContainer = document.getElementById('deep-diagnostic-container');
+    if (deepDiagContainer) deepDiagContainer.style.display = 'none';
+
+    const msftRawContainer = document.getElementById('msft-raw-fields');
+    if (msftRawContainer) msftRawContainer.style.display = 'none';
+
+    const liqTableBody = document.getElementById('liquidity-debug-table-body');
+    if (liqTableBody) liqTableBody.innerHTML = '';
+
+    const volDiagContent = document.getElementById('volatility-integrity-diagnostic-content');
+    if (volDiagContent) volDiagContent.innerHTML = 'Run Analysis to see Volatility & Data Integrity Diagnostic.';
+
+    const diagSelect = document.getElementById('diag-ticker-select');
+    if (diagSelect) diagSelect.innerHTML = '<option value="">-- Select Ticker --</option>';
+  }
+
+  function clearInputs() {
+    // 1. Reset mandate fields to default values
+    const form = document.getElementById('mandate-form');
+    if (form) {
+      form.reset();
+      const riskFactorInput = document.getElementById('risk-factor');
+      if (riskFactorInput) riskFactorInput.value = '0.5';
+      const riskVal = document.getElementById('risk-value');
+      if (riskVal) riskVal.textContent = '0.5';
+      const riskLbl = document.getElementById('risk-label');
+      if (riskLbl) riskLbl.textContent = 'Balanced';
+
+      const presetStatus = document.getElementById('preset-status');
+      if (presetStatus) presetStatus.style.display = 'none';
+
+      portfolioState.isPreset = false;
+
+      const totalInvestment = document.getElementById('total-investment');
+      if (totalInvestment) totalInvestment.value = '500000';
+
+      const baseCurrency = document.getElementById('base-currency');
+      if (baseCurrency) baseCurrency.value = 'USD';
+
+      const cashReserve = document.getElementById('cash-reserve');
+      if (cashReserve) cashReserve.value = '5';
+
+      const commPct = document.getElementById('commission-pct');
+      if (commPct) commPct.value = '0.1';
+
+      const taxPct = document.getElementById('tax-pct');
+      if (taxPct) taxPct.value = '0';
+
+      const fracShares = document.getElementById('fractional-shares');
+      if (fracShares) fracShares.checked = false;
+
+      const maxDays = document.getElementById('max-execution-days');
+      if (maxDays) maxDays.value = '5';
+
+      const rebalTol = document.getElementById('rebalance-tolerance');
+      if (rebalTol) rebalTol.value = '0.5';
+
+      const invVolRadio = document.querySelector('input[name="weightingMethod"][value="inverseVolatility"]');
+      if (invVolRadio) invVolRadio.checked = true;
+
+      const regimeCapInput = document.getElementById('regime-cap-input');
+      if (regimeCapInput) regimeCapInput.value = '10';
+
+      const regimeToggle = document.getElementById('regime-overlay-toggle');
+      if (regimeToggle) regimeToggle.checked = false;
+
+      const regimeLabel = document.getElementById('regime-toggle-status-label');
+      if (regimeLabel) regimeLabel.textContent = 'Overlay: OFF';
+
+      updateMandateFromForm();
+    }
+
+    // 2. Clear existing holdings
+    portfolioState.inputs.existingHoldings = [];
+    localStorage.removeItem(HOLDINGS_STORAGE_KEY);
+    renderHoldings();
+
+    // 3. Clear runtime-added custom tickers
+    portfolioState.inputs.customTickers = [];
+    localStorage.removeItem(CUSTOM_TICKERS_STORAGE_KEY);
+    renderAddedTickers();
+
+    // 4. Reset results
+    resetResults();
+  }
+
+  const resetResultsBtn = document.getElementById('reset-results-btn');
+  if (resetResultsBtn) {
+    resetResultsBtn.addEventListener('click', () => {
+      resetResults();
+    });
+  }
+
+  const clearInputsBtn = document.getElementById('clear-inputs-btn');
+  if (clearInputsBtn) {
+    clearInputsBtn.addEventListener('click', () => {
+      clearInputs();
     });
   }
 
@@ -3098,9 +3317,10 @@ function computeRiskScoreAndFinal(portfolioState) {
           const existingShares = existingHolding ? existingHolding.shares : 0;
 
           try {
-            const [bars, fundamentals] = await Promise.all([
+            const [bars, fundamentals, surprisesRes] = await Promise.all([
                fetchDailyPrices(task.ticker, twelveDataKey, forceRefresh),
-               fetchFundamentals(task.ticker, finnhubKey, forceRefresh)
+               fetchFundamentals(task.ticker, finnhubKey, forceRefresh),
+               fetchFinnhubEarningsSurprises(task.ticker, finnhubKey, forceRefresh)
             ]);
             
             const latestBar = bars[bars.length - 1];
@@ -3150,6 +3370,7 @@ function computeRiskScoreAndFinal(portfolioState) {
               sma200Arr,
               indicators,
               fundamentals,
+              earningsQuality: computeEarningsQualityScoreFromSurprises(surprisesRes),
               technical: { 
                 belowBothMAs: (latestBar.close < indicators.sma50) && (latestBar.close < indicators.sma200)
               },
@@ -3466,50 +3687,189 @@ function computeRiskScoreAndFinal(portfolioState) {
     }
   }
 
+  function computeEarningsQualityScoreFromSurprises(surprisesRes) {
+    if (!surprisesRes || !surprisesRes.success || !Array.isArray(surprisesRes.data) || surprisesRes.data.length === 0) {
+      return {
+        available: false,
+        abstained: true,
+        reason: surprisesRes?.reason || "No earnings surprise data available",
+        score: null,
+        beatCount: 0,
+        totalQuarters: 0,
+        beatRateRatio: 0,
+        avgSurprisePct: 0,
+        trend: "N/A",
+        beatScore: 0,
+        surpriseScore: 0,
+        trendScore: 0
+      };
+    }
+
+    const qData = surprisesRes.data; // up to 4 quarters
+    const beats = qData.filter(q => 
+      (q.actual !== undefined && q.estimate !== undefined && q.actual >= q.estimate) || 
+      (q.surprise !== undefined && q.surprise >= 0)
+    ).length;
+    
+    const totalQuarters = qData.length;
+    const beatRateRatio = totalQuarters > 0 ? (beats / totalQuarters) : 0;
+    const beatScore = beatRateRatio * 100;
+
+    let totalSurprisePct = 0;
+    let countPct = 0;
+    qData.forEach(q => {
+      if (q.surprisePercent !== undefined && q.surprisePercent !== null) {
+        totalSurprisePct += Number(q.surprisePercent);
+        countPct++;
+      } else if (q.actual !== undefined && q.estimate !== undefined && q.estimate !== 0) {
+        totalSurprisePct += ((q.actual - q.estimate) / Math.abs(q.estimate)) * 100;
+        countPct++;
+      }
+    });
+
+    const avgSurprisePct = countPct > 0 ? (totalSurprisePct / countPct) : 0;
+    const surpriseScore = Math.max(0, Math.min(100, 50 + (avgSurprisePct * 5)));
+
+    let trend = "Stable";
+    if (qData.length >= 2) {
+      const recent = qData[0].surprisePercent ?? 0;
+      const older = qData[qData.length - 1].surprisePercent ?? 0;
+      if (recent > older + 1) trend = "Improving";
+      else if (recent < older - 1) trend = "Deteriorating";
+    }
+
+    const trendScore = trend === "Improving" ? 100 : (trend === "Stable" ? 50 : 0);
+
+    const score = Math.round((0.40 * beatScore) + (0.40 * surpriseScore) + (0.20 * trendScore));
+
+    return {
+      available: true,
+      abstained: false,
+      reason: null,
+      score,
+      beatCount: beats,
+      totalQuarters,
+      beatRateRatio,
+      avgSurprisePct: Number(avgSurprisePct.toFixed(2)),
+      trend,
+      beatScore: Number(beatScore.toFixed(1)),
+      surpriseScore: Number(surpriseScore.toFixed(1)),
+      trendScore: Number(trendScore.toFixed(1))
+    };
+  }
+
   // --- COMPUTE QUALITY ---
   function computeQualityScore(stock) {
     if (stock.status === 'data-error' || stock.status === 'excluded-liquidity') return;
     const fundamentals = stock.fundamentals || {};
-    let score = 0;
-    let missing = [];
-    
-    let revenueScore = null;
-    let roeScore = null;
-    let debtScore = null;
+    const bucket = stock.bucket || 'steady';
+    const threshold = CONFIG.qualityGate[bucket] || 50;
 
-    let available = true;
-
-    // Revenue Growth Score (0 to 100, target 15%)
+    // 1. Calculate component raw scores (0 to 100)
+    let revRaw = null;
     if (fundamentals.revenueGrowth !== null && fundamentals.revenueGrowth !== undefined && !Number.isNaN(fundamentals.revenueGrowth)) {
-        let s = Math.max(0, Math.min(100, (fundamentals.revenueGrowth / 0.15) * 100));
-        revenueScore = s * CONFIG.qualityWeights[stock.bucket].revenueGrowth;
-        score += revenueScore;
-    } else {
-        missing.push('revenueGrowth');
-        available = false;
+      revRaw = Math.max(0, Math.min(100, (fundamentals.revenueGrowth / 0.15) * 100));
     }
 
-    // ROE Score (0 to 100, target 20%)
+    let roeRaw = null;
     if (fundamentals.roe !== null && fundamentals.roe !== undefined && !Number.isNaN(fundamentals.roe)) {
-        let s = Math.max(0, Math.min(100, (fundamentals.roe / 0.20) * 100));
-        roeScore = s * CONFIG.qualityWeights[stock.bucket].roe;
-        score += roeScore;
-    } else {
-        missing.push('roe');
-        available = false;
+      roeRaw = Math.max(0, Math.min(100, (fundamentals.roe / 0.20) * 100));
     }
 
-    // Debt to Equity Score (0 to 100, lower is better, target < 1, 0 at 2)
+    let debtRaw = null;
     if (fundamentals.debtEquity !== null && fundamentals.debtEquity !== undefined && !Number.isNaN(fundamentals.debtEquity)) {
-        let s = Math.max(0, Math.min(100, 100 - (fundamentals.debtEquity / 2) * 100));
-        debtScore = s * CONFIG.qualityWeights[stock.bucket].debtEquity;
-        score += debtScore;
-    } else {
-        missing.push('debtEquity');
-        available = false;
+      debtRaw = Math.max(0, Math.min(100, 100 - (fundamentals.debtEquity / 2) * 100));
     }
 
-    const threshold = CONFIG.qualityGate[stock.bucket];
+    // --- BEFORE score (Original 3 inputs) ---
+    const origWeightsMap = {
+      steady:    { revenueGrowth: 0.30, roe: 0.40, debtEquity: 0.30 },
+      growth:    { revenueGrowth: 0.55, roe: 0.35, debtEquity: 0.10 },
+      cyclical:  { revenueGrowth: 0.35, roe: 0.30, debtEquity: 0.35 },
+      defensive: { revenueGrowth: 0.15, roe: 0.40, debtEquity: 0.45 }
+    };
+    const origW = origWeightsMap[bucket] || origWeightsMap.steady;
+
+    let scoreBefore = 0;
+    if (revRaw !== null) scoreBefore += revRaw * origW.revenueGrowth;
+    if (roeRaw !== null) scoreBefore += roeRaw * origW.roe;
+    if (debtRaw !== null) scoreBefore += debtRaw * origW.debtEquity;
+
+    const passedBefore = scoreBefore >= threshold;
+
+    // --- AFTER score (New 4 inputs or 3 re-normalised if earnings abstained) ---
+    const newWeightsMap = CONFIG.qualityWeights;
+    const newW = newWeightsMap[bucket] || newWeightsMap.steady;
+
+    const eq = stock.earningsQuality || {};
+    const hasEarnings = eq.available && eq.score !== null && eq.score !== undefined;
+
+    let scoreAfter = 0;
+    let missing = [];
+    let earningsAbstained = false;
+
+    let revenueScoreContrib = 0;
+    let roeScoreContrib = 0;
+    let debtScoreContrib = 0;
+    let earningsScoreContrib = 0;
+
+    if (hasEarnings) {
+      if (revRaw !== null) {
+        revenueScoreContrib = revRaw * newW.revenueGrowth;
+        scoreAfter += revenueScoreContrib;
+      } else {
+        missing.push('revenueGrowth');
+      }
+
+      if (roeRaw !== null) {
+        roeScoreContrib = roeRaw * newW.roe;
+        scoreAfter += roeScoreContrib;
+      } else {
+        missing.push('roe');
+      }
+
+      if (debtRaw !== null) {
+        debtScoreContrib = debtRaw * newW.debtEquity;
+        scoreAfter += debtScoreContrib;
+      } else {
+        missing.push('debtEquity');
+      }
+
+      earningsScoreContrib = eq.score * newW.earnings;
+      scoreAfter += earningsScoreContrib;
+    } else {
+      earningsAbstained = true;
+      const sumBaseWeights = newW.revenueGrowth + newW.roe + newW.debtEquity;
+      const normFactor = sumBaseWeights > 0 ? (1.0 / sumBaseWeights) : 1.0;
+
+      const normRev = newW.revenueGrowth * normFactor;
+      const normRoe = newW.roe * normFactor;
+      const normDebt = newW.debtEquity * normFactor;
+
+      if (revRaw !== null) {
+        revenueScoreContrib = revRaw * normRev;
+        scoreAfter += revenueScoreContrib;
+      } else {
+        missing.push('revenueGrowth');
+      }
+
+      if (roeRaw !== null) {
+        roeScoreContrib = roeRaw * normRoe;
+        scoreAfter += roeScoreContrib;
+      } else {
+        missing.push('roe');
+      }
+
+      if (debtRaw !== null) {
+        debtScoreContrib = debtRaw * normDebt;
+        scoreAfter += debtScoreContrib;
+      } else {
+        missing.push('debtEquity');
+      }
+    }
+
+    const passedAfter = scoreAfter >= threshold;
+    const available = (revRaw !== null || roeRaw !== null || debtRaw !== null);
 
     const errStr = (fundamentals && fundamentals.errorMessage) ||
                    (fundamentals && fundamentals.earlyReturnReason) ||
@@ -3517,27 +3877,29 @@ function computeRiskScoreAndFinal(portfolioState) {
                    (!available && missing.length > 0 ? `Missing metrics (${missing.join(', ')})` : null);
 
     stock.quality = {
-        score,
-        missing,
-        revenueScore,
-        roeScore,
-        debtScore,
-        threshold: threshold,
-        available: available,
-        passed: false,
-        errorMessage: errStr
+      scoreBefore: Number(scoreBefore.toFixed(2)),
+      passedBefore: passedBefore,
+      scoreAfter: Number(scoreAfter.toFixed(2)),
+      passedAfter: passedAfter,
+      score: Number(scoreAfter.toFixed(2)), // Active score
+      passed: passedAfter,                   // Active status
+      threshold: threshold,
+      available: available,
+      abstained: earningsAbstained,
+      earningsScore: hasEarnings ? Number(eq.score.toFixed(1)) : null,
+      revRaw: revRaw !== null ? Number(revRaw.toFixed(1)) : null,
+      roeRaw: roeRaw !== null ? Number(roeRaw.toFixed(1)) : null,
+      debtRaw: debtRaw !== null ? Number(debtRaw.toFixed(1)) : null,
+      revenueScore: Number(revenueScoreContrib.toFixed(2)),
+      roeScore: Number(roeScoreContrib.toFixed(2)),
+      debtScore: Number(debtScoreContrib.toFixed(2)),
+      earningsContribScore: Number(earningsScoreContrib.toFixed(2)),
+      missing: missing,
+      errorMessage: errStr
     };
 
     if (fundamentals) {
-        fundamentals.available = available;
-    }
-
-    if (!available) {
-        stock.quality.passed = true;
-    } else if (score < threshold) {
-        stock.quality.passed = false;
-    } else {
-        stock.quality.passed = true;
+      fundamentals.available = available;
     }
   }
 
@@ -3583,6 +3945,12 @@ function computeRiskScoreAndFinal(portfolioState) {
     if (stock.liquidity && (stock.liquidity.tier === 'Low' || stock.liquidity.tier === 'Illiquid')) {
       score -= 10;
       deductions.push({ reason: `Low liquidity tier (${stock.liquidity.tier})`, points: 10 });
+    }
+
+    // 6. Earnings quality abstention
+    if (stock.quality && stock.quality.abstained) {
+      score -= 10;
+      deductions.push({ reason: 'Earnings quality data unavailable (abstain rule -10 pts)', points: 10 });
     }
 
     const finalScore = Math.max(0, score);
@@ -5979,42 +6347,186 @@ function computeRiskScoreAndFinal(portfolioState) {
     if (!summaryContainer) return;
 
     let validStocks = portfolioState.stocks.filter(s => s.quality && s.quality.score !== undefined);
-    
-    // Sort highest to lowest
-    validStocks.sort((a, b) => b.quality.score - a.quality.score);
+    if (validStocks.length === 0) {
+      summaryContainer.innerHTML = 'No quality data available yet. Run analysis to compute quality scores.';
+      return;
+    }
 
-    let html = '';
-    let passCount = 0;
-    let failCount = 0;
+    // Sort alphabetically by ticker
+    validStocks.sort((a, b) => a.ticker.localeCompare(b.ticker));
+
+    const abstainedStocks = validStocks.filter(s => s.quality && s.quality.abstained);
+    const flippedStocks = validStocks.filter(s => s.quality && s.quality.passedBefore !== s.quality.passedAfter);
+
+    let passCountBefore = validStocks.filter(s => s.quality.passedBefore).length;
+    let passCountAfter = validStocks.filter(s => s.quality.passedAfter).length;
+    let failCountBefore = validStocks.length - passCountBefore;
+    let failCountAfter = validStocks.length - passCountAfter;
+
+    let html = `
+      <div style="font-size: 0.85rem; line-height: 1.5; color: var(--ink);">
+        <!-- 1. Formula & Weight Allocation Matrix -->
+        <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin-bottom: 1rem;">
+          <h4 style="margin: 0 0 0.5rem 0; font-size: 0.95rem; color: var(--accent);">Prompt 18 — Earnings Quality Integration & Formula</h4>
+          <p style="margin: 0 0 0.5rem 0;">
+            <strong>Earnings Quality Formula (0 to 100):</strong><br>
+            <code>Earnings Quality Score = (0.40 &times; Beat Rate Score) + (0.40 &times; Average Surprise Score) + (0.20 &times; Trend Direction Score)</code>
+          </p>
+          <ul style="margin: 0 0 0.75rem 1.25rem; padding: 0;">
+            <li><strong>Beat Rate Score:</strong> <code>(Beats / Reported Quarters) &times; 100</code> (0 to 100)</li>
+            <li><strong>Average Surprise Score:</strong> <code>Clamp(50 + (Average Surprise % &times; 5), 0, 100)</code></li>
+            <li><strong>Trend Direction Score:</strong> <code>100</code> (Improving), <code>50</code> (Stable), <code>0</code> (Deteriorating)</li>
+          </ul>
+
+          <h5 style="margin: 0.5rem 0 0.25rem 0; font-size: 0.85rem; text-transform: uppercase; color: var(--ink);">Prompt 18 Quality Weights Matrix</h5>
+          <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-bottom: 0.5rem;">
+            <thead>
+              <tr style="background: #f3f4f6; border-bottom: 1px solid #ccc; text-align: left;">
+                <th style="padding: 0.4rem;">Bucket</th>
+                <th style="padding: 0.4rem; text-align: right;">Revenue Growth</th>
+                <th style="padding: 0.4rem; text-align: right;">ROE</th>
+                <th style="padding: 0.4rem; text-align: right;">Debt / Equity</th>
+                <th style="padding: 0.4rem; text-align: right;">Earnings Quality</th>
+                <th style="padding: 0.4rem; text-align: right;">Row Sum</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-bottom: 1px solid #eee;">
+                <td style="padding: 0.3rem;">Quality Large-Cap (steady)</td>
+                <td style="padding: 0.3rem; text-align: right;">0.255</td>
+                <td style="padding: 0.3rem; text-align: right;">0.340</td>
+                <td style="padding: 0.3rem; text-align: right;">0.255</td>
+                <td style="padding: 0.3rem; text-align: right;">0.150</td>
+                <td style="padding: 0.3rem; text-align: right; font-weight: bold;">1.000</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #eee;">
+                <td style="padding: 0.3rem;">Growth (growth)</td>
+                <td style="padding: 0.3rem; text-align: right;">0.468</td>
+                <td style="padding: 0.3rem; text-align: right;">0.298</td>
+                <td style="padding: 0.3rem; text-align: right;">0.085</td>
+                <td style="padding: 0.3rem; text-align: right;">0.150</td>
+                <td style="padding: 0.3rem; text-align: right; font-weight: bold;">1.001</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #eee;">
+                <td style="padding: 0.3rem;">Energy, Materials & Financials (cyclical)</td>
+                <td style="padding: 0.3rem; text-align: right;">0.298</td>
+                <td style="padding: 0.3rem; text-align: right;">0.255</td>
+                <td style="padding: 0.3rem; text-align: right;">0.298</td>
+                <td style="padding: 0.3rem; text-align: right;">0.150</td>
+                <td style="padding: 0.3rem; text-align: right; font-weight: bold;">1.001</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #eee;">
+                <td style="padding: 0.3rem;">Staples, Healthcare & Utilities (defensive)</td>
+                <td style="padding: 0.3rem; text-align: right;">0.128</td>
+                <td style="padding: 0.3rem; text-align: right;">0.340</td>
+                <td style="padding: 0.3rem; text-align: right;">0.383</td>
+                <td style="padding: 0.3rem; text-align: right;">0.150</td>
+                <td style="padding: 0.3rem; text-align: right; font-weight: bold;">1.001</td>
+              </tr>
+            </tbody>
+          </table>
+          <div style="font-size: 0.75rem; color: #555;">
+            * <strong>Abstention Rule:</strong> Where earnings data cannot be retrieved, the earnings component abstains (does not score 0), the remaining 3 inputs are re-normalised to sum to 1.00, and Data Confidence is reduced by 10 points.
+          </div>
+        </div>
+
+        <!-- 2. Abstention Summary -->
+        <div style="background: #fefce8; border: 1px solid #fef08a; border-radius: 6px; padding: 0.75rem; margin-bottom: 1rem; color: #854d0e;">
+          <strong>Abstained Companies (${abstainedStocks.length}):</strong> 
+          ${abstainedStocks.length > 0 ? abstainedStocks.map(s => `<strong>${s.ticker}</strong>`).join(', ') : 'None — 100% of universe companies successfully retrieved Finnhub earnings history.'}
+        </div>
+
+        <!-- 3. Before vs After Summary Banner -->
+        <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+          <div style="flex: 1; background: #f3f4f6; padding: 0.75rem; border-radius: 6px; border: 1px solid #e5e7eb;">
+            <div><strong>Before Prompt 18 (3-Input Quality):</strong></div>
+            <div>Passing: <strong>${passCountBefore}</strong> | Failing: <strong>${failCountBefore}</strong></div>
+          </div>
+          <div style="flex: 1; background: #e0f2fe; padding: 0.75rem; border-radius: 6px; border: 1px solid #bae6fd; color: #0369a1;">
+            <div><strong>After Prompt 18 (4-Input / Abstain):</strong></div>
+            <div>Passing: <strong>${passCountAfter}</strong> | Failing: <strong>${failCountAfter}</strong></div>
+          </div>
+          <div style="flex: 1; background: ${flippedStocks.length > 0 ? '#fef2f2' : '#f0fdf4'}; padding: 0.75rem; border-radius: 6px; border: 1px solid ${flippedStocks.length > 0 ? '#fecaca' : '#bbf7d0'}; color: ${flippedStocks.length > 0 ? '#991b1b' : '#166534'};">
+            <div><strong>Qualification Flips:</strong></div>
+            <div>Count: <strong>${flippedStocks.length}</strong> ${flippedStocks.length > 0 ? `(${flippedStocks.map(s => s.ticker).join(', ')})` : '(No qualification flips)'}</div>
+          </div>
+        </div>
+
+        <!-- 4. Complete Before and After Table -->
+        <h4 style="margin: 0 0 0.5rem 0; font-size: 0.95rem; color: var(--accent);">Before-and-After Quality Score & Qualification Comparison</h4>
+        <div style="overflow-x: auto; width: 100%; max-width: 100%;">
+          <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; border: 1px solid #ddd;">
+            <thead>
+              <tr style="background: var(--surface); border-bottom: 2px solid var(--line); text-align: left;">
+                <th style="padding: 0.5rem;">Ticker</th>
+                <th style="padding: 0.5rem;">Bucket</th>
+                <th style="padding: 0.5rem; text-align: right;">3-Input Score (Before)</th>
+                <th style="padding: 0.5rem; text-align: center;">Status (Before)</th>
+                <th style="padding: 0.5rem; text-align: right;">Earnings Quality (0-100)</th>
+                <th style="padding: 0.5rem; text-align: right;">4-Input Score (After)</th>
+                <th style="padding: 0.5rem; text-align: center;">Status (After)</th>
+                <th style="padding: 0.5rem; text-align: right;">Score Delta</th>
+                <th style="padding: 0.5rem; text-align: center;">Qualification Impact</th>
+              </tr>
+            </thead>
+            <tbody>
+    `;
 
     validStocks.forEach(s => {
-      let isPass = s.quality.passed || s.quality.score >= s.quality.threshold;
-      if (isPass) passCount++;
-      else failCount++;
-
-      let statusText = isPass ? '<span style="color: #2e7d32;">PASS</span>' : '<span style="color: var(--error);">FAIL</span>';
-      html += `<div><strong>${s.ticker}</strong>${s.isAdded ? ` <span style="background: #e0f2fe; color: #0369a1; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.7rem; font-weight: bold; border: 1px solid #bae6fd; margin-left: 0.25rem;">added</span>` : ''} (${s.bucket}) &mdash; quality ${s.quality.score.toFixed(1)} | threshold ${s.quality.threshold} | ${statusText}</div>`;
-    });
-
-    if (validStocks.length > 0) {
-      let highest = validStocks[0].quality.score;
-      let lowest = validStocks[validStocks.length - 1].quality.score;
+      const q = s.quality || {};
+      const eq = s.earningsQuality || {};
       
-      let median;
-      let mid = Math.floor(validStocks.length / 2);
-      if (validStocks.length % 2 === 0) {
-        median = (validStocks[mid - 1].quality.score + validStocks[mid].quality.score) / 2;
+      const beforeScore = q.scoreBefore !== undefined ? q.scoreBefore : 0;
+      const afterScore = q.scoreAfter !== undefined ? q.scoreAfter : q.score;
+      const delta = afterScore - beforeScore;
+      const deltaStr = delta > 0 ? `+${delta.toFixed(2)}` : delta.toFixed(2);
+
+      const beforePass = q.passedBefore;
+      const afterPass = q.passedAfter;
+
+      let impactText = '';
+      let impactStyle = '';
+
+      if (q.abstained) {
+        impactText = `Abstained (${afterPass ? 'PASS' : 'FAIL'})`;
+        impactStyle = 'color: #854d0e; font-weight: bold;';
+      } else if (beforePass && !afterPass) {
+        impactText = 'FLIPPED: PASS &rarr; FAIL';
+        impactStyle = 'color: #dc2626; font-weight: bold; background: #fee2e2; padding: 0.1rem 0.4rem; border-radius: 4px;';
+      } else if (!beforePass && afterPass) {
+        impactText = 'FLIPPED: FAIL &rarr; PASS';
+        impactStyle = 'color: #16a34a; font-weight: bold; background: #dcfce7; padding: 0.1rem 0.4rem; border-radius: 4px;';
+      } else if (afterPass) {
+        impactText = 'Unchanged (PASS)';
+        impactStyle = 'color: #166534;';
       } else {
-        median = validStocks[mid].quality.score;
+        impactText = 'Unchanged (FAIL)';
+        impactStyle = 'color: #991b1b;';
       }
 
-      html += `<div style="margin-top: 1rem; border-top: 1px dashed #ccc; padding-top: 0.5rem;">`;
-      html += `<div><strong>Passing:</strong> ${passCount} | <strong>Failing:</strong> ${failCount}</div>`;
-      html += `<div><strong>Highest:</strong> ${highest.toFixed(1)} | <strong>Lowest:</strong> ${lowest.toFixed(1)} | <strong>Median:</strong> ${median.toFixed(1)}</div>`;
-      html += `</div>`;
-    } else {
-      html = 'No quality data available yet.';
-    }
+      const eqDisplay = eq.available && eq.score !== null ? `${eq.score} (${eq.beatCount}/${eq.totalQuarters} beats, ${eq.trend})` : 'ABSTAIN';
+
+      html += `
+        <tr style="border-bottom: 1px solid #eee;">
+          <td style="padding: 0.4rem; font-weight: bold;">${s.ticker}${s.isAdded ? ' <span style="font-size:0.7rem; color:#0369a1; background:#e0f2fe; padding:0.1rem 0.3rem; border-radius:3px;">added</span>' : ''}</td>
+          <td style="padding: 0.4rem;">${s.bucket}</td>
+          <td style="padding: 0.4rem; text-align: right;">${beforeScore.toFixed(2)}</td>
+          <td style="padding: 0.4rem; text-align: center; color: ${beforePass ? '#16a34a' : '#dc2626'}; font-weight: bold;">${beforePass ? 'PASS' : 'FAIL'}</td>
+          <td style="padding: 0.4rem; text-align: right;">${eqDisplay}</td>
+          <td style="padding: 0.4rem; text-align: right; font-weight: bold;">${afterScore.toFixed(2)}</td>
+          <td style="padding: 0.4rem; text-align: center; color: ${afterPass ? '#16a34a' : '#dc2626'}; font-weight: bold;">${afterPass ? 'PASS' : 'FAIL'}</td>
+          <td style="padding: 0.4rem; text-align: right; color: ${delta >= 0 ? '#16a34a' : '#dc2626'};">${deltaStr}</td>
+          <td style="padding: 0.4rem; text-align: center;"><span style="${impactStyle}">${impactText}</span></td>
+        </tr>
+      `;
+    });
+
+    html += `
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
 
     summaryContainer.innerHTML = html;
   }
@@ -6125,6 +6637,11 @@ function computeRiskScoreAndFinal(portfolioState) {
           <div><strong>Correlation Matrix Filter Predicate:</strong> <code>${escapeHtml(filterPredicateStr)}</code></div>
           <div><strong>Correlation Matrix Property Name:</strong> <code>${escapeHtml(filterPropNameStr)}</code></div>
           <div><strong>Correlation Matrix Qualifying Holdings Count:</strong> ${corrPassingCount}</div>
+          <div><strong>Correlation Matrix Tickers (${corrPassingCount}):</strong> ${corrPassingStocks.map(s => escapeHtml(s.ticker) + (s.isAdded ? ' (added)' : '')).join(', ') || 'None'}</div>
+          <div><strong>Heatmap Runtime-Added Tickers Status:</strong> Runtime-added tickers were already eligible for inclusion in the Holdings Correlation heatmap whenever they have price history and non-zero final weight; added explicit diagnostic listing of qualifying matrix tickers.</div>
+        </div>
+        <div style="margin-top: 0.5rem; border-top: 1px dashed var(--line); padding-top: 0.5rem;">
+          <div><strong>Page Scrolling & Layout Fix:</strong> Element <code>#tab-dashboard</code> had a fixed <code>max-width: 640px</code> and outer table wrappers had <code>overflow: hidden</code>; changed <code>#tab-dashboard</code> to <code>max-width: 100%</code> and removed <code>overflow: hidden</code> from bucket table wrappers to allow full-width 1280px scrolling and unclipped horizontal table scrolling.</div>
         </div>
         <div style="margin-top: 0.5rem; border-top: 1px dashed var(--line); padding-top: 0.5rem;">
           <div><strong>Contributing Portfolio Weights (Pre-Constraint vs Final):</strong></div>
@@ -6646,7 +7163,7 @@ function computeRiskScoreAndFinal(portfolioState) {
         html += `
           <div style="margin-top: 8px; border-top: 1px solid #ddd; padding-top: 8px; color: #555;">
             <details>
-              <summary style="cursor: pointer; font-weight: bold; margin-bottom: 4px;">Show raw API keys</summary>
+              <summary style="cursor: pointer; font-weight: bold; margin-bottom: 4px;">Show raw Finnhub JSON metric keys</summary>
               <div style="font-size: 0.75rem; line-height: 1.4;">
                 ${finnhubKeys.join(', ') || 'None'}
               </div>

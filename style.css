@@ -38,14 +38,15 @@ body {
 
 .app-main {
   width: 100%;
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 1.5rem;
   display: block;
 }
 
 #tab-dashboard {
-  max-width: 640px;
+  width: 100%;
+  max-width: 100%;
   margin: 0 auto;
   display: grid;
   gap: 1.5rem;
@@ -116,7 +117,8 @@ button:hover {
 }
 
 .app-footer {
-  max-width: 640px;
+  width: 100%;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 0 1.5rem 2rem;
   font-size: 0.85rem;

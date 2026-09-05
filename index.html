@@ -91,7 +91,22 @@
             <label style="text-transform: none; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem;"><input type="radio" name="weightingMethod" value="equalWeight" /> Equal Weight</label>
           </div>
         </div>
+
+        <div style="display: flex; gap: 0.75rem; margin-top: 1.25rem; border-top: 1px solid var(--line); padding-top: 1rem; flex-wrap: wrap;">
+          <button type="button" id="reset-results-btn" style="background: #e8e3d5; color: var(--ink); border: 1px solid var(--line); font-size: 0.9rem;">Reset results</button>
+          <button type="button" id="clear-inputs-btn" style="background: #e8e3d5; color: var(--ink); border: 1px solid var(--line); font-size: 0.9rem;">Clear inputs</button>
+        </div>
       </form>
+    </section>
+
+    <!-- EXECUTIVE SUMMARY PANEL -->
+    <section class="panel" id="executive-summary-panel" style="margin-top: 1.5rem;">
+      <h2 title="AI-generated investment committee executive summary derived strictly from computed portfolio state and constraints">Executive Summary</h2>
+      <p class="field-hint">Investment committee executive summary report generated via OpenRouter JSON schema from computed portfolio state.</p>
+      
+      <div id="executive-summary-container" style="margin-top: 1rem;">
+        <p class="placeholder">Run analysis to generate Executive Summary.</p>
+      </div>
     </section>
 
     <!-- EXISTING HOLDINGS & UNIVERSE ADDITIONS SUB-PANEL -->
@@ -195,6 +210,8 @@
       <details>
         <summary style="cursor: pointer; font-family: 'Menlo', 'Courier New', monospace; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em;"><strong>API Keys Configuration</strong> (Twelve Data, FMP, Finnhub, OpenRouter)</summary>
         <div class="api-keys-content" style="margin-top: 1rem; display: grid; gap: 1rem;">
+          <div id="api-keys-status-line" style="font-weight: bold; font-size: 0.88rem; color: var(--accent); margin-bottom: 0.25rem;">0 of 5 keys loaded from this browser</div>
+
           <div class="field-group">
             <label for="twelvedata-key">Twelve Data API Key (Price Data)</label>
             <div class="key-input-wrapper" style="display: flex; align-items: center; gap: 0.5rem;">
@@ -246,7 +263,9 @@
             <p id="openrouter-model-status" class="field-hint" style="margin-top: 0.25rem; font-size: 0.8rem; color: #555;"></p>
           </div>
 
-          <button type="button" id="clear-keys-btn" style="background: var(--error); margin-top: 0.5rem;">Clear Saved Keys</button>
+          <button type="button" id="clear-keys-btn" style="background: var(--error); margin-top: 0.5rem;">Clear saved keys</button>
+          
+          <p style="font-size: 0.8rem; color: #666; margin-top: 0.5rem; line-height: 1.4;">Keys are stored only in this browser and are never sent anywhere except to the data providers. They are held separately for each web address, so the live site and the local preview each keep their own copy.</p>
         </div>
       </details>
     </section>
@@ -313,16 +332,6 @@
       
       <div id="earnings-analysis-container" style="margin-top: 1rem;">
         <p class="placeholder">Run analysis to perform earnings call analysis on top 3 holdings.</p>
-      </div>
-    </section>
-
-    <!-- EXECUTIVE SUMMARY PANEL -->
-    <section class="panel" id="executive-summary-panel" style="margin-top: 1.5rem;">
-      <h2 title="AI-generated investment committee executive summary derived strictly from computed portfolio state and constraints">Executive Summary</h2>
-      <p class="field-hint">Investment committee executive summary report generated via OpenRouter JSON schema from computed portfolio state.</p>
-      
-      <div id="executive-summary-container" style="margin-top: 1rem;">
-        <p class="placeholder">Run analysis to generate Executive Summary.</p>
       </div>
     </section>
 
