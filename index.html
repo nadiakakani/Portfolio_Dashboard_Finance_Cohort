@@ -6,6 +6,57 @@
   <title>Nadia Finance Dashboard</title>
   <meta name="description" content="Nadia Finance Dashboard - portfolio construction and rebalancing" />
   <link rel="stylesheet" href="./style.css" />
+  <style>
+    /* CHANGE 2 — Permanent visible scrollbar */
+    .tscroll {
+      overflow-x: auto;
+      max-width: 100%;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: thin;
+      padding-bottom: 6px;
+    }
+    .tscroll::-webkit-scrollbar {
+      height: 10px;
+      -webkit-appearance: none;
+    }
+    .tscroll::-webkit-scrollbar-thumb {
+      background: #9aa0a6;
+      border-radius: 5px;
+    }
+    .tscroll::-webkit-scrollbar-track {
+      background: #e8e8e8;
+      border-radius: 5px;
+    }
+
+    /* CHANGE 4 — Sticky ticker column on screen */
+    .tscroll th:first-child,
+    .tscroll td:first-child {
+      position: sticky;
+      left: 0;
+      background: #fff;
+      z-index: 2;
+    }
+
+    /* CHANGE 3 — Print rules that do not depend on selectors */
+    @media print {
+      @page { size: A4 landscape; margin: 8mm; }
+      html, body { width: auto !important; overflow: visible !important; }
+      * { overflow: visible !important; max-width: none !important; }
+      div, section, main, article { width: auto !important; }
+      table { width: 100% !important; min-width: 0 !important;
+              table-layout: fixed !important; font-size: 6.5pt !important;
+              word-break: break-word !important; }
+      th, td { padding: 2px 3px !important; white-space: normal !important; }
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+      .tscroll th:first-child,
+      .tscroll td:first-child {
+        position: static !important;
+        left: auto !important;
+        background: transparent !important;
+      }
+    }
+  </style>
 </head>
 <body>
   <div class="print-header" id="print-header">
@@ -434,47 +485,45 @@
 
       <section class="panel" style="margin-top: 1.5rem;">
         <h2>Diagnostic Table</h2>
-        <div class="table-scroll-container">
-          <table id="diag-table" class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right; min-width: 1200px;">
-            <thead>
-              <tr style="background: var(--surface); border-bottom: 2px solid var(--ink);">
-                <th style="text-align: left; padding: 6px;">Ticker</th>
-                <th style="text-align: left; padding: 6px;">Bucket</th>
-                <th style="text-align: left; padding: 6px;">Status</th>
-                <th style="padding: 6px;">Bars</th>
-                <th style="padding: 6px;">Price</th>
-                <th style="padding: 6px;">SMA50</th>
-                <th style="padding: 6px;">SMA200</th>
-                <th style="padding: 6px;">RSI</th>
-                <th style="padding: 6px;">MACD Hist</th>
-                <th style="padding: 6px;">Ann Vol</th>
-                <th style="padding: 6px;">Max DD</th>
-                <th style="padding: 6px;">Med Vol</th>
-                <th style="padding: 6px;">Vol Ratio</th>
-                <th style="padding: 6px;">Ret(63d)</th>
-                <th style="padding: 6px;">Below MAs</th>
-                <th style="padding: 6px;">FMP OK/Status</th>
-                <th style="padding: 6px;">RevGrw (Raw)</th>
-                <th style="padding: 6px;">ROE (Raw)</th>
-                <th style="padding: 6px;">DebtEq (Raw)</th>
-                <th style="padding: 6px;">RevScore</th>
-                <th style="padding: 6px;">ROEScore</th>
-                <th style="padding: 6px;">DebtScore</th>
-                <th style="padding: 6px;">Quality</th>
-                <th style="padding: 6px;">Threshold</th>
-                <th style="padding: 6px;">Trend</th>
-                <th style="padding: 6px;">Momentum</th>
-                <th style="padding: 6px;">Risk</th>
-                <th style="padding: 6px;">Volume</th>
-                <th style="padding: 6px;">Sentiment</th>
-                <th style="padding: 6px; font-weight: bold;">Final</th>
-              </tr>
-            </thead>
-            <tbody id="diag-table-body">
-              <!-- JS populated -->
-            </tbody>
-          </table>
-        </div>
+        <table id="diag-table" class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right; min-width: 1200px;">
+          <thead>
+            <tr style="background: var(--surface); border-bottom: 2px solid var(--ink);">
+              <th style="text-align: left; padding: 6px;">Ticker</th>
+              <th style="text-align: left; padding: 6px;">Bucket</th>
+              <th style="text-align: left; padding: 6px;">Status</th>
+              <th style="padding: 6px;">Bars</th>
+              <th style="padding: 6px;">Price</th>
+              <th style="padding: 6px;">SMA50</th>
+              <th style="padding: 6px;">SMA200</th>
+              <th style="padding: 6px;">RSI</th>
+              <th style="padding: 6px;">MACD Hist</th>
+              <th style="padding: 6px;">Ann Vol</th>
+              <th style="padding: 6px;">Max DD</th>
+              <th style="padding: 6px;">Med Vol</th>
+              <th style="padding: 6px;">Vol Ratio</th>
+              <th style="padding: 6px;">Ret(63d)</th>
+              <th style="padding: 6px;">Below MAs</th>
+              <th style="padding: 6px;">FMP OK/Status</th>
+              <th style="padding: 6px;">RevGrw (Raw)</th>
+              <th style="padding: 6px;">ROE (Raw)</th>
+              <th style="padding: 6px;">DebtEq (Raw)</th>
+              <th style="padding: 6px;">RevScore</th>
+              <th style="padding: 6px;">ROEScore</th>
+              <th style="padding: 6px;">DebtScore</th>
+              <th style="padding: 6px;">Quality</th>
+              <th style="padding: 6px;">Threshold</th>
+              <th style="padding: 6px;">Trend</th>
+              <th style="padding: 6px;">Momentum</th>
+              <th style="padding: 6px;">Risk</th>
+              <th style="padding: 6px;">Volume</th>
+              <th style="padding: 6px;">Sentiment</th>
+              <th style="padding: 6px; font-weight: bold;">Final</th>
+            </tr>
+          </thead>
+          <tbody id="diag-table-body">
+            <!-- JS populated -->
+          </tbody>
+        </table>
       </section>
 
       <section class="panel" style="margin-top: 1.5rem;">
@@ -497,23 +546,21 @@
 
       <section class="panel" style="margin-top: 1.5rem;">
         <h2>Liquidity Debug Table (Temp)</h2>
-        <div style="overflow-x: auto; margin-top: 1rem;">
-          <table id="liquidity-debug-table" class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right; min-width: 800px;">
-            <thead>
-              <tr style="background: var(--surface); border-bottom: 2px solid var(--ink);">
-                <th style="text-align: left; padding: 6px;">Ticker</th>
-                <th style="padding: 6px;">Median Volume</th>
-                <th style="padding: 6px;">ADTV (USD)</th>
-                <th style="text-align: center; padding: 6px;">Tier</th>
-                <th style="padding: 6px;">Ceiling</th>
-                <th style="padding: 6px;">Liquidity Cap (USD)</th>
-              </tr>
-            </thead>
-            <tbody id="liquidity-debug-table-body">
-              <!-- JS populated -->
-            </tbody>
-          </table>
-        </div>
+        <table id="liquidity-debug-table" class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right; min-width: 800px; margin-top: 1rem;">
+          <thead>
+            <tr style="background: var(--surface); border-bottom: 2px solid var(--ink);">
+              <th style="text-align: left; padding: 6px;">Ticker</th>
+              <th style="padding: 6px;">Median Volume</th>
+              <th style="padding: 6px;">ADTV (USD)</th>
+              <th style="text-align: center; padding: 6px;">Tier</th>
+              <th style="padding: 6px;">Ceiling</th>
+              <th style="padding: 6px;">Liquidity Cap (USD)</th>
+            </tr>
+          </thead>
+          <tbody id="liquidity-debug-table-body">
+            <!-- JS populated -->
+          </tbody>
+        </table>
       </section>
 
       <section class="panel" style="margin-top: 1.5rem;">

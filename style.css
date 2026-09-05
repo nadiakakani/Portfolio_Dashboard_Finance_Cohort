@@ -160,16 +160,34 @@ button:hover {
 }
 
 /* Horizontal Table Scroll Container */
-.table-scroll-container {
+.table-scroll-container,
+.tscroll {
   overflow-x: auto;
   max-width: 100%;
-  width: 100%;
-  position: relative;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: white;
-  margin-top: 0.5rem;
   -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  padding-bottom: 6px;
+}
+.tscroll::-webkit-scrollbar {
+  height: 10px;
+  -webkit-appearance: none;
+}
+.tscroll::-webkit-scrollbar-thumb {
+  background: #9aa0a6;
+  border-radius: 5px;
+}
+.tscroll::-webkit-scrollbar-track {
+  background: #e8e8e8;
+  border-radius: 5px;
+}
+
+/* Sticky ticker column on screen */
+.tscroll th:first-child,
+.tscroll td:first-child {
+  position: sticky;
+  left: 0;
+  background: #fff;
+  z-index: 2;
 }
 
 /* Page horizontal overflow constraint */
@@ -320,21 +338,24 @@ table {
 }
 
 @media print {
-  @page { size: A4 landscape; margin: 12mm; }
+  @page { size: A4 landscape; margin: 8mm; }
+  html, body { width: auto !important; overflow: visible !important; }
+  * { overflow: visible !important; max-width: none !important; }
+  div, section, main, article { width: auto !important; }
+  table { width: 100% !important; min-width: 0 !important;
+          table-layout: fixed !important; font-size: 6.5pt !important;
+          word-break: break-word !important; }
+  th, td { padding: 2px 3px !important; white-space: normal !important; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
-  /* CRITICAL — unwind the scroll containers */
-  div[style*="overflow-x"], .table-scroll-container, .table-scroll {
-    overflow: visible !important;
-    max-width: none !important;
-    width: auto !important;
+  /* Disable sticky columns in print */
+  .tscroll th:first-child,
+  .tscroll td:first-child,
+  .sticky-col {
+    position: static !important;
+    left: auto !important;
+    background: transparent !important;
   }
-  table { 
-    width: 100% !important; 
-    min-width: 0 !important;
-    table-layout: auto; 
-    font-size: 8pt; 
-  }
-  th, td { padding: 3px 5px !important; }
 
   /* Hide when printing */
   .print-controls,
@@ -364,9 +385,6 @@ table {
   
   body.printing-diagnostics #tab-dashboard { display: none !important; }
   body.printing-diagnostics #tab-diagnostics { display: block !important; }
-
-  /* Preserve color */
-  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
   /* Page breaks */
   .panel, section.panel { 

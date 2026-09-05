@@ -550,6 +550,17 @@ function renderVerdictRow() {
   `;
 }
 
+function wrapAllTables() {
+  document.querySelectorAll('table').forEach(t => {
+    if (t.parentElement && t.parentElement.classList.contains('tscroll')) return;
+    const w = document.createElement('div');
+    w.className = 'tscroll';
+    t.parentNode.insertBefore(w, t);
+    w.appendChild(t);
+  });
+}
+window.wrapAllTables = wrapAllTables;
+
 document.addEventListener('DOMContentLoaded', () => {
   // Update and render dashboard state for Section 2
   function updateDashboardState() {
@@ -757,6 +768,7 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Re-render header tiles reading identical fields as section 11
   renderVerdictRow();
+  wrapAllTables();
 }
 
 // Render disclaimer
@@ -3749,6 +3761,7 @@ function computeRiskScoreAndFinal(portfolioState) {
 
         // Automatically generate Executive Summary as part of run output
         await generateExecutiveSummaryAuto();
+        wrapAllTables();
 
       } catch (e) {
         console.error("Analysis execution error:", e);
@@ -3763,6 +3776,7 @@ function computeRiskScoreAndFinal(portfolioState) {
 
   // Initial render calculation
   updateDashboardState();
+  wrapAllTables();
 
   // --- COMPUTE LIQUIDITY ---
   function computeLiquidity(stock) {
@@ -4669,19 +4683,18 @@ function computeRiskScoreAndFinal(portfolioState) {
         <p style="font-size: 0.8rem; color: #555; margin-bottom: 0.75rem;">
           All three weighting methods are evaluated after passing through the identical execution constraint pipeline (per-stock cap, bucket cap, liquidity cap, ADV cap, minimum position size rule, and cash reserve).
         </p>
-        <div class="table-scroll-container">
-          <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: right;">
-            <thead>
-              <tr style="border-bottom: 2px solid var(--ink); background: var(--surface);">
-                <th class="sticky-col" style="text-align: left; padding: 6px;">Weighting Method</th>
-                <th class="num-cell" style="padding: 6px;" title="Includes cash as 0% volatility asset">Total Portfolio Volatility (Constrained, Cash=0%)</th>
-                <th class="num-cell" style="padding: 6px;" title="Weights renormalised to sum to 100% equity">Equity Sleeve Volatility (Constrained, Renormalised 100%)</th>
-                <th class="num-cell" style="padding: 6px;" title="Target weights before constraints">Pre-Constraint Volatility (Old)</th>
-                <th class="num-cell" style="padding: 6px;">Concentration (HHI)</th>
-                <th style="text-align: center; padding: 6px;">Status</th>
-              </tr>
-            </thead>
-            <tbody>
+        <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem; text-align: right;">
+          <thead>
+            <tr style="border-bottom: 2px solid var(--ink); background: var(--surface);">
+              <th class="sticky-col" style="text-align: left; padding: 6px;">Weighting Method</th>
+              <th class="num-cell" style="padding: 6px;" title="Includes cash as 0% volatility asset">Total Portfolio Volatility (Constrained, Cash=0%)</th>
+              <th class="num-cell" style="padding: 6px;" title="Weights renormalised to sum to 100% equity">Equity Sleeve Volatility (Constrained, Renormalised 100%)</th>
+              <th class="num-cell" style="padding: 6px;" title="Target weights before constraints">Pre-Constraint Volatility (Old)</th>
+              <th class="num-cell" style="padding: 6px;">Concentration (HHI)</th>
+              <th style="text-align: center; padding: 6px;">Status</th>
+            </tr>
+          </thead>
+          <tbody>
     `;
 
     for (const mKey of ["inverseVolatility", "scoreProportional", "equalWeight"]) {
@@ -4710,7 +4723,6 @@ function computeRiskScoreAndFinal(portfolioState) {
     compHtml += `
             </tbody>
           </table>
-        </div>
         <p style="font-size: 0.8rem; color: #555; margin-top: 0.5rem; font-style: italic;">
           * Inverse volatility weighting minimizes overall portfolio volatility by tilting weight toward calm qualifiers.
         </p>
@@ -4757,7 +4769,6 @@ function computeRiskScoreAndFinal(portfolioState) {
         `;
       } else {
         posHtml += `
-          <div class="table-scroll-container">
             <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right;">
               <thead>
                 <tr style="background: #f4f3ef; border-bottom: 1px solid var(--line);">
@@ -4825,7 +4836,6 @@ function computeRiskScoreAndFinal(portfolioState) {
                 ` : ''}
               </tfoot>
             </table>
-          </div>
         `;
       }
 
@@ -4852,6 +4862,7 @@ function computeRiskScoreAndFinal(portfolioState) {
         }
       });
     }
+    wrapAllTables();
   }
 
   // --- PROMPT 11: ESTIMATE COST (A6.9) ---
@@ -5661,10 +5672,9 @@ function computeRiskScoreAndFinal(portfolioState) {
             </span>
           </div>
 
-          <div class="table-scroll-container">
-            <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right;">
-              <thead>
-                <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
+          <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right;">
+            <thead>
+              <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
                   <th class="sticky-col" style="text-align: left; padding: 6px;">Ticker</th>
                   <th style="text-align: left; padding: 6px;">Status</th>
                   <th class="num-cell" style="padding: 6px;" title="Weighted 5-component final score (0-100)">Final Score / 50</th>
@@ -5788,7 +5798,6 @@ function computeRiskScoreAndFinal(portfolioState) {
       html += `
               </tbody>
             </table>
-          </div>
         </div>
       `;
     }
@@ -5806,6 +5815,7 @@ function computeRiskScoreAndFinal(portfolioState) {
         }
       });
     });
+    wrapAllTables();
   }
 
   // --- RENDER WEIGHTS CHART (Chart.js) ---
@@ -5906,9 +5916,8 @@ function computeRiskScoreAndFinal(portfolioState) {
 
     let html = `
       <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem;">
-        <div class="table-scroll-container">
-          <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right;">
-            <thead>
+        <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right;">
+          <thead>
               <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
                 <th style="text-align: center; padding: 6px;">Side</th>
                 <th class="sticky-col" style="text-align: left; padding: 6px;">Ticker</th>
@@ -5971,11 +5980,11 @@ function computeRiskScoreAndFinal(portfolioState) {
     html += `
             </tbody>
           </table>
-        </div>
       </div>
     `;
 
     container.innerHTML = html;
+    wrapAllTables();
   }
 
   // --- RENDER CORRELATION HEATMAP ---
@@ -6060,11 +6069,10 @@ function computeRiskScoreAndFinal(portfolioState) {
         ⚠️ Note: Correlations tend to rise toward +1.0 during periods of extreme market stress, precisely when diversification is needed most.
       </div>
 
-      <div class="table-scroll-container">
-        <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.75rem; text-align: center;">
-          <thead>
-            <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
-              <th style="text-align: left; padding: 6px;">Ticker</th>
+      <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.75rem; text-align: center;">
+        <thead>
+          <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
+            <th style="text-align: left; padding: 6px;">Ticker</th>
     `;
 
     tickers.forEach(t => {
@@ -6083,8 +6091,9 @@ function computeRiskScoreAndFinal(portfolioState) {
       tableHtml += `</tr>`;
     });
 
-    tableHtml += `</tbody></table></div>`;
+    tableHtml += `</tbody></table>`;
     container.innerHTML = tableHtml;
+    wrapAllTables();
   }
 
   // --- RENDER WARNINGS & HARD BLOCKS ---
@@ -6278,11 +6287,10 @@ function computeRiskScoreAndFinal(portfolioState) {
           </span>
         </div>
 
-        <div class="table-scroll-container">
-          <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right;">
-            <thead>
-              <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
-                <th class="sticky-col" style="text-align: left; padding: 6px;">Ticker</th>
+        <table class="diag-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: right;">
+          <thead>
+            <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
+              <th class="sticky-col" style="text-align: left; padding: 6px;">Ticker</th>
                 <th style="text-align: left; padding: 6px;">Bucket</th>
                 <th style="text-align: left; padding: 6px;">Status</th>
                 <th style="text-align: left; padding: 6px;">Liquidity Tier</th>
@@ -6414,11 +6422,11 @@ function computeRiskScoreAndFinal(portfolioState) {
             </tr>
           </tfoot>
         </table>
-      </div>
     </div>
   `;
 
   positionsContainer.innerHTML = posHtml;
+  wrapAllTables();
 }
 
 
@@ -6839,6 +6847,7 @@ function computeRiskScoreAndFinal(portfolioState) {
       btnDiag.classList.remove('active');
       tabDash.style.display = 'grid'; // because it uses grid in CSS
       tabDiag.style.display = 'none';
+      wrapAllTables();
     });
     btnDiag.addEventListener('click', () => {
       btnDiag.classList.add('active');
@@ -6847,6 +6856,7 @@ function computeRiskScoreAndFinal(portfolioState) {
       tabDash.style.display = 'none';
       renderDiagnosticsTable();
       populateDiagnosticsDropdown();
+      wrapAllTables();
     });
   }
 
@@ -7058,10 +7068,9 @@ function computeRiskScoreAndFinal(portfolioState) {
 
         <!-- 4. Complete Before and After Table -->
         <h4 style="margin: 0 0 0.5rem 0; font-size: 0.95rem; color: var(--accent);">Before-and-After Quality Score & Qualification Comparison</h4>
-        <div style="overflow-x: auto; width: 100%; max-width: 100%;">
-          <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; border: 1px solid #ddd;">
-            <thead>
-              <tr style="background: var(--surface); border-bottom: 2px solid var(--line); text-align: left;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; border: 1px solid #ddd;">
+          <thead>
+            <tr style="background: var(--surface); border-bottom: 2px solid var(--line); text-align: left;">
                 <th style="padding: 0.5rem;">Ticker</th>
                 <th style="padding: 0.5rem;">Bucket</th>
                 <th style="padding: 0.5rem; text-align: right;">Bucket Threshold</th>
@@ -7132,7 +7141,6 @@ function computeRiskScoreAndFinal(portfolioState) {
     html += `
             </tbody>
           </table>
-        </div>
 
         <!-- 5. Data Confidence Penalties Reconciled -->
         <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin-top: 1rem;">
@@ -7176,6 +7184,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     `;
 
     summaryContainer.innerHTML = html;
+    wrapAllTables();
   }
 
   function renderVolatilityIntegrityDiagnostic() {
@@ -7555,6 +7564,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     `;
 
     container.innerHTML = part1Html + part2Html + part3Html + part4Html + part5Html;
+    wrapAllTables();
   }
 
   function renderDiagnosticsTable() {
@@ -7671,6 +7681,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     } else if (msftRawContainer) {
       msftRawContainer.style.display = 'none';
     }
+    wrapAllTables();
   }
 
   function renderLiquidityDebugTable() {
@@ -7693,6 +7704,7 @@ function computeRiskScoreAndFinal(portfolioState) {
       `;
     });
     tbody.innerHTML = html;
+    wrapAllTables();
   }
 
   function populateDiagnosticsDropdown() {
