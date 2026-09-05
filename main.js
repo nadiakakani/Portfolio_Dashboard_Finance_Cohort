@@ -6270,6 +6270,87 @@ function computeRiskScoreAndFinal(portfolioState) {
 }
 
 
+  // --- VOLUME DIAGNOSTIC ---
+  function renderVolumeDiagnostic() {
+    const container = document.getElementById('volume-diagnostic-content');
+    if (!container) return;
+
+    if (!portfolioState.stocks || portfolioState.stocks.length === 0) {
+      container.textContent = 'Run analysis to see Volume Diagnostic.';
+      return;
+    }
+
+    const lines = [];
+    const scores = [];
+
+    portfolioState.stocks.forEach(stock => {
+      const ind = stock.indicators || {};
+      const medianVol = ind.medianDailyVolume !== undefined ? ind.medianDailyVolume : 0;
+      const medianVol60 = ind.medianDailyVolume60 !== undefined ? ind.medianDailyVolume60 : 1;
+      const obvChange20 = ind.obvChange20 !== undefined ? ind.obvChange20 : 0;
+      const ratio = medianVol / (medianVol60 || 1);
+      
+      const score = stock.components?.volume !== undefined ? stock.components.volume : 0;
+      scores.push(score);
+
+      const tStr = stock.ticker.padEnd(6, ' ');
+      const mVolStr = Math.round(medianVol).toString().padEnd(9, ' ');
+      const mVol60Str = Math.round(medianVol60).toString().padEnd(9, ' ');
+      const ratioStr = ratio.toFixed(3).padEnd(6, ' ');
+      const obvChange = Math.round(obvChange20).toString().padEnd(11, ' ');
+      const scoreStr = score.toFixed(1).padStart(4, ' ');
+
+      lines.push(`${tStr}  medianDailyVolume(20d)=${mVolStr}  medianDailyVolume60(60d)=${mVol60Str}  ratio=${ratioStr}  obvChange20(20d)=${obvChange}  score=${scoreStr}`);
+    });
+
+    lines.push("");
+    lines.push("MAPPING");
+    lines.push("  const ratio = (ind.medianDailyVolume || 0) / (ind.medianDailyVolume60 || 1);");
+    lines.push("  const ratioScore = Math.max(0, Math.min(100, 50 + (ratio - 1) * 100));");
+    lines.push("  // OBV trend");
+    lines.push("  const obvScore = Math.max(0, Math.min(100, 50 + (ind.obvChange20 / (ind.medianDailyVolume * 20 || 1)) * 250));");
+    lines.push("  return (0.50 * ratioScore) + (0.50 * obvScore); // main.js:3082-3088");
+    lines.push("");
+
+    const above50 = scores.filter(s => s > 50).length;
+    const below50 = scores.filter(s => s < 50).length;
+    
+    const sortedStocks = portfolioState.stocks.slice().sort((a,b) => (a.components?.volume || 0) - (b.components?.volume || 0));
+    const minS = sortedStocks[0];
+    const maxS = sortedStocks[sortedStocks.length - 1];
+    
+    const sum = scores.reduce((a,b) => a+b, 0);
+    const mean = scores.length > 0 ? sum / scores.length : 0;
+    
+    let median = 0;
+    if (scores.length > 0) {
+       const sorted = scores.slice().sort((a,b) => a-b);
+       const mid = Math.floor(sorted.length / 2);
+       if (sorted.length % 2 === 0) {
+           median = (sorted[mid-1] + sorted[mid]) / 2;
+       } else {
+           median = sorted[mid];
+       }
+    }
+
+    lines.push("DISTRIBUTION");
+    lines.push(`  count above 50 = ${above50}`);
+    lines.push(`  count below 50 = ${below50}`);
+    if (minS) lines.push(`  minimum = ${minS.ticker} ${(minS.components?.volume || 0).toFixed(1)}`);
+    if (maxS) lines.push(`  maximum = ${maxS.ticker} ${(maxS.components?.volume || 0).toFixed(1)}`);
+    lines.push(`  mean    = ${mean.toFixed(1)}`);
+    lines.push(`  median  = ${median.toFixed(1)}`);
+    lines.push("");
+
+    lines.push("WEIGHT");
+    lines.push(`  steady:    ${CONFIG.scoreWeights.steady.volume}`);
+    lines.push(`  growth:    ${CONFIG.scoreWeights.growth.volume}`);
+    lines.push(`  cyclical:  ${CONFIG.scoreWeights.cyclical.volume}`);
+    lines.push(`  defensive: ${CONFIG.scoreWeights.defensive.volume}`);
+
+    container.textContent = lines.join('\\n');
+  }
+
   // --- QUALIFICATION SUMMARY (DIAGNOSTICS) ---
   function renderQualificationSummary() {
     const summaryContainer = document.getElementById('qualification-summary-content');
@@ -7084,6 +7165,7 @@ function computeRiskScoreAndFinal(portfolioState) {
   }
 
   function renderDiagnosticsTable() {
+    renderVolumeDiagnostic();
     renderQualificationSummary();
     renderQualitySummary();
     renderVolatilityIntegrityDiagnostic();
