@@ -24,12 +24,13 @@ const CONFIG = {
   },
 
   qualityGate: { steady: 55, growth: 35, cyclical: 40, defensive: 55 },
-  qualityWeights: {
-    steady:    { revenueGrowth: 0.255, roe: 0.340, debtEquity: 0.255, earnings: 0.15 },
-    growth:    { revenueGrowth: 0.468, roe: 0.298, debtEquity: 0.085, earnings: 0.15 },
-    cyclical:  { revenueGrowth: 0.298, roe: 0.255, debtEquity: 0.298, earnings: 0.15 },
-    defensive: { revenueGrowth: 0.128, roe: 0.340, debtEquity: 0.383, earnings: 0.15 }
+  qualityWeightsBase: {
+    steady:    { revenueGrowth: 0.30, roe: 0.40, debtEquity: 0.30 },
+    growth:    { revenueGrowth: 0.55, roe: 0.35, debtEquity: 0.10 },
+    cyclical:  { revenueGrowth: 0.35, roe: 0.30, debtEquity: 0.35 },
+    defensive: { revenueGrowth: 0.15, roe: 0.40, debtEquity: 0.45 }
   },
+  earningsWeight: 0.15,
 
   qualificationThreshold: 50,     // final score below this does not qualify
   weightingMethod: "inverseVolatility",  // | "scoreProportional" | "equalWeight"
@@ -90,23 +91,52 @@ const CONFIG = {
   disclaimer: "Educational MBA prototype. Not personalised investment advice. Proposes only — never trades."
 };
 
+function getQualityWeights(bucket) {
+  const b = CONFIG.qualityWeightsBase[bucket] || CONFIG.qualityWeightsBase.steady;
+  const k = 1 - CONFIG.earningsWeight;
+  return {
+    revenueGrowth: b.revenueGrowth * k,
+    roe:           b.roe * k,
+    debtEquity:    b.debtEquity * k,
+    earnings:      CONFIG.earningsWeight
+  };
+}
+
 function assertScoreWeights() {
+  let errors = [];
   const buckets = Object.keys(CONFIG.scoreWeights);
   for (const bucket of buckets) {
     const weights = CONFIG.scoreWeights[bucket];
     const sum = weights.trend + weights.momentum + weights.risk + weights.volume + weights.sentiment;
     if (Math.abs(sum - 1.0) > 1e-5) {
-      console.error(`CRITICAL: scoreWeights for bucket '${bucket}' sum to ${sum.toFixed(4)}, not 1.00!`);
+      errors.push(`CRITICAL: scoreWeights for bucket '${bucket}' sum to ${sum.toFixed(4)}, not 1.00!`);
     }
   }
 
-  const qualBuckets = Object.keys(CONFIG.qualityWeights);
+  const qualBuckets = Object.keys(CONFIG.qualityWeightsBase);
   for (const bucket of qualBuckets) {
-    const weights = CONFIG.qualityWeights[bucket];
-    const sum = weights.revenueGrowth + weights.roe + weights.debtEquity + weights.earnings;
-    if (Math.abs(sum - 1.0) > 0.005) {
-      console.error(`CRITICAL: qualityWeights for bucket '${bucket}' sum to ${sum.toFixed(4)}, not 1.00!`);
+    const baseW = CONFIG.qualityWeightsBase[bucket];
+    const baseSum = baseW.revenueGrowth + baseW.roe + baseW.debtEquity;
+    if (Math.abs(baseSum - 1.0) > 1e-6) {
+      errors.push(`CRITICAL: qualityWeightsBase for bucket '${bucket}' sum to ${baseSum.toFixed(6)}, not 1.000000!`);
     }
+
+    const derived = getQualityWeights(bucket);
+    const derivedSum = derived.revenueGrowth + derived.roe + derived.debtEquity + derived.earnings;
+    if (Math.abs(derivedSum - 1.0) > 1e-6) {
+      errors.push(`CRITICAL: derived qualityWeights for bucket '${bucket}' sum to ${derivedSum.toFixed(6)}, not 1.000000!`);
+    }
+  }
+
+  if (errors.length > 0) {
+    console.error(errors.join('\n'));
+    // Delay slightly to ensure body exists if called very early, though body is usually parsed.
+    setTimeout(() => {
+      const banner = document.createElement('div');
+      banner.style.cssText = 'background: #dc2626; color: white; padding: 1rem; text-align: center; font-weight: bold; position: sticky; top: 0; z-index: 9999;';
+      banner.innerHTML = `QUALITY WEIGHTS ASSERTION FAILED: <br> ${errors.join('<br>')}`;
+      document.body.prepend(banner);
+    }, 0);
   }
 }
 
@@ -3162,11 +3192,16 @@ function computeRiskScoreAndFinal(portfolioState) {
               <div style="font-size: 0.7rem; color: #555; margin-top: 0.2rem;">
                 + <strong>${s.topContributors?.join(', ') || 'N/A'}</strong> | - <strong>${s.topDetractors?.join(', ') || 'N/A'}</strong>
               </div>
-              ${s.sentimentData && s.sentimentData.available ? `
+              ${s.sentimentData && s.sentimentData.available ? 
+                (s.sentimentData.abstained ? `
+              <div style="border-top: 1px dashed #ccc; margin-top: 0.35rem; padding-top: 0.35rem; font-size: 0.7rem; color: #666;">
+                <div>Sentiment: 50.0 &mdash; abstained (model returned no usable score)</div>
+                ${s.sentimentData.rationale ? `<div style="color: #666; font-style: italic; margin-top: 0.15rem;">"${s.sentimentData.rationale}"</div>` : ''}
+              </div>` : `
               <div style="border-top: 1px dashed #ccc; margin-top: 0.35rem; padding-top: 0.35rem; font-size: 0.7rem;">
                 <div>Sentiment: <strong>${s.sentimentData.adjusted.toFixed(1)}</strong> (raw ${s.sentimentData.rawScore >= 0 ? '+' + s.sentimentData.rawScore : s.sentimentData.rawScore} | AI conf ${s.sentimentData.aiConfidence}% | Sources: ${s.sentimentData.distinctSources})</div>
                 <div style="color: #444; font-style: italic; margin-top: 0.15rem;">"${s.sentimentData.rationale}"</div>
-              </div>` : s.sentimentData && s.sentimentData.error ? `
+              </div>`) : s.sentimentData && s.sentimentData.error ? `
               <div style="border-top: 1px dashed #ccc; margin-top: 0.35rem; padding-top: 0.35rem; font-size: 0.7rem; color: #c62828;">
                 Sentiment error: ${s.sentimentData.error}
               </div>` : `
@@ -3174,6 +3209,9 @@ function computeRiskScoreAndFinal(portfolioState) {
                 Sentiment: no relevant news — neutral 50
               </div>
               `}
+              <div style="border-top: 1px dashed #ccc; margin-top: 0.35rem; padding-top: 0.35rem; font-size: 0.7rem;">
+                ${formatLatestEarningsLine(s)}
+              </div>
               ${s.technical?.belowBothMAs ? `<div style="margin-top: 0.35rem; color: #d97706; font-weight: bold; font-size: 0.75rem;">DOWNTREND: price below both SMA50 and SMA200</div>` : ''}
               ${s.fundamentals?.available === false ? `<div style="margin-top: 0.35rem; color: #c62828; font-weight: bold; font-size: 0.75rem;">QUALITY DATA UNAVAILABLE (-20 Risk Penalty)</div>` : ''}
               ${s.existingShares > 0 ? `<div style="margin-top: 0.25rem; color: #1565c0;">Existing Holding: ${s.existingShares.toLocaleString()} shares</div>` : ''}
@@ -3531,6 +3569,12 @@ function computeRiskScoreAndFinal(portfolioState) {
             let adjusted = 50 + (normalised - 50) * sourceQuality * recency * confidenceFactor;
             adjusted = Math.max(0, Math.min(100, adjusted));
 
+            let abstained = false;
+            if (confidenceVal < 20 || !llmResult.rationale || llmResult.rationale.trim() === "") {
+              abstained = true;
+              adjusted = 50;
+            }
+
             const topKeys = llmResult.topLevelKeys || Object.keys(llmResult);
             const hasScoreKey = topKeys.includes('sentiment_score');
             const hasConfKey = topKeys.includes('confidence');
@@ -3564,6 +3608,7 @@ function computeRiskScoreAndFinal(portfolioState) {
               rationale: llmResult.rationale,
               articleIds: llmResult.article_ids || [],
               available: true,
+              abstained: abstained,
               adjusted: adjusted,
               distinctSources: stock.news.distinctSources,
               newestAgeDays: stock.news.newestAgeDays,
@@ -3754,8 +3799,67 @@ function computeRiskScoreAndFinal(portfolioState) {
       trend,
       beatScore: Number(beatScore.toFixed(1)),
       surpriseScore: Number(surpriseScore.toFixed(1)),
-      trendScore: Number(trendScore.toFixed(1))
+      trendScore: Number(trendScore.toFixed(1)),
+      latestRecord: qData[0] || null
     };
+  }
+
+  function formatLatestEarningsLine(s) {
+    const eq = s.earningsQuality;
+    if (!eq || !eq.available || !eq.latestRecord) {
+      return 'Latest earnings: not available';
+    }
+
+    const rec = eq.latestRecord;
+    if (rec.actual === undefined || rec.actual === null || rec.estimate === undefined || rec.estimate === null) {
+      return 'Latest earnings: not available';
+    }
+
+    const actualVal = Number(rec.actual);
+    const estVal = Number(rec.estimate);
+
+    if (isNaN(actualVal) || isNaN(estVal)) {
+      return 'Latest earnings: not available';
+    }
+
+    let qNum = rec.quarter;
+    let yNum = rec.year;
+    if ((!qNum || !yNum) && rec.period) {
+      const parts = String(rec.period).split('-');
+      if (parts.length >= 2) {
+        yNum = parts[0];
+        const month = parseInt(parts[1], 10);
+        if (!isNaN(month)) qNum = Math.ceil(month / 3);
+      }
+    }
+
+    const qLabel = (qNum && yNum) ? `Q${qNum} ${yNum}` : (rec.period || '');
+
+    const actualStr = `$${actualVal.toFixed(2)}`;
+    const estStr = `$${estVal.toFixed(2)}`;
+
+    let surpPct = 0;
+    if (rec.surprisePercent !== undefined && rec.surprisePercent !== null) {
+      surpPct = Number(rec.surprisePercent);
+    } else if (estVal !== 0) {
+      surpPct = ((actualVal - estVal) / Math.abs(estVal)) * 100;
+    }
+
+    const surpSign = surpPct >= 0 ? '+' : '';
+    const surpStr = `${surpSign}${surpPct.toFixed(1)}% surprise`;
+
+    let status = 'IN LINE';
+    let color = '#666666';
+    if (actualVal > estVal) {
+      status = 'BEAT';
+      color = '#2e7d32';
+    } else if (actualVal < estVal) {
+      status = 'MISS';
+      color = '#c62828';
+    }
+
+    const qPrefix = qLabel ? `${qLabel} — ` : '';
+    return `Latest earnings: ${qPrefix}EPS ${actualStr} vs ${estStr} est (${surpStr}) · <span style="color: ${color}; font-weight: bold;">${status}</span>`;
   }
 
   // --- COMPUTE QUALITY ---
@@ -3782,13 +3886,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     }
 
     // --- BEFORE score (Original 3 inputs) ---
-    const origWeightsMap = {
-      steady:    { revenueGrowth: 0.30, roe: 0.40, debtEquity: 0.30 },
-      growth:    { revenueGrowth: 0.55, roe: 0.35, debtEquity: 0.10 },
-      cyclical:  { revenueGrowth: 0.35, roe: 0.30, debtEquity: 0.35 },
-      defensive: { revenueGrowth: 0.15, roe: 0.40, debtEquity: 0.45 }
-    };
-    const origW = origWeightsMap[bucket] || origWeightsMap.steady;
+    const origW = CONFIG.qualityWeightsBase[bucket] || CONFIG.qualityWeightsBase.steady;
 
     let scoreBefore = 0;
     if (revRaw !== null) scoreBefore += revRaw * origW.revenueGrowth;
@@ -3798,8 +3896,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     const passedBefore = scoreBefore >= threshold;
 
     // --- AFTER score (New 4 inputs or 3 re-normalised if earnings abstained) ---
-    const newWeightsMap = CONFIG.qualityWeights;
-    const newW = newWeightsMap[bucket] || newWeightsMap.steady;
+    const newW = getQualityWeights(bucket);
 
     const eq = stock.earningsQuality || {};
     const hasEarnings = eq.available && eq.score !== null && eq.score !== undefined;
@@ -3933,6 +4030,9 @@ function computeRiskScoreAndFinal(portfolioState) {
     if (!stock.sentimentData || !stock.sentimentData.available || stock.sentimentData.error) {
       score -= 15;
       deductions.push({ reason: 'Sentiment data unavailable or failed', points: 15 });
+    } else if (stock.sentimentData.abstained) {
+      score -= 15;
+      deductions.push({ reason: 'Sentiment analysis abstained (model returned no usable score)', points: 15 });
     }
 
     // 4. Source diversity
@@ -4591,7 +4691,7 @@ function computeRiskScoreAndFinal(portfolioState) {
                 <tr style="background: #f4f3ef; border-bottom: 1px solid var(--line);">
                   <th class="sticky-col" style="text-align: left; padding: 4px 6px;">Ticker</th>
                   <th style="text-align: left; padding: 4px 6px;">Status</th>
-                  <th class="num-cell" style="padding: 4px 6px;">Final Score</th>
+                  <th class="num-cell" style="padding: 4px 6px;">Final Score / 50</th>
                   <th class="num-cell" style="padding: 4px 6px;">Ann Vol</th>
                   <th class="num-cell" style="padding: 4px 6px;">Inv Vol Wt</th>
                   <th class="num-cell toggle-weight-col" style="padding: 4px 6px;">Score Prop Wt</th>
@@ -5289,7 +5389,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     if (status === 'qualified') {
       return `<span style="color: #1b5e20; background: #e8f5e9; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #c8e6c9; white-space: nowrap;">✅ Qualified</span>`;
     } else if (status === 'excluded-score') {
-      return `<span style="color: #b45309; background: #fffbeb; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #fde68a; white-space: nowrap;">Below Threshold</span>`;
+      return `<span style="color: #b45309; background: #fffbeb; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #fde68a; white-space: nowrap;">Below Score Threshold</span>`;
     } else if (status === 'excluded-downtrend' || status === 'excluded-trend') {
       return `<span style="color: #b45309; background: #fffbeb; padding: 0.15rem 0.45rem; border-radius: 3px; font-weight: bold; border: 1px solid #fde68a; white-space: nowrap;">Downtrend Block</span>`;
     } else if (status === 'excluded-quality') {
@@ -5437,9 +5537,9 @@ function computeRiskScoreAndFinal(portfolioState) {
                 <tr style="background: #f4f3ef; border-bottom: 2px solid var(--line);">
                   <th class="sticky-col" style="text-align: left; padding: 6px;">Ticker</th>
                   <th style="text-align: left; padding: 6px;">Status</th>
-                  <th class="num-cell" style="padding: 6px;" title="Weighted 5-component final score (0-100)">Final Score</th>
+                  <th class="num-cell" style="padding: 6px;" title="Weighted 5-component final score (0-100)">Final Score / 50</th>
                   <th class="num-cell" style="padding: 6px;" title="Annualised Volatility & Risk Score">Volatility / Risk</th>
-                  <th class="num-cell" style="padding: 6px;" title="Quality Gate Score vs Bucket Threshold">Quality Gate</th>
+                  <th class="num-cell" style="padding: 6px;" title="Quality Gate Score vs Bucket Threshold">Quality Gate (fundamentals)</th>
                   <th class="num-cell" style="padding: 6px;" title="Model allocation weight before caps">Model Weight</th>
                   <th class="num-cell" style="padding: 6px;" title="Final allocation weight after caps">Final Weight</th>
                   <th style="text-align: left; padding: 6px;" title="Binding constraint limiting position size">Binding Constraint</th>
@@ -6391,42 +6491,72 @@ function computeRiskScoreAndFinal(portfolioState) {
               </tr>
             </thead>
             <tbody>
-              <tr style="border-bottom: 1px solid #eee;">
-                <td style="padding: 0.3rem;">Quality Large-Cap (steady)</td>
-                <td style="padding: 0.3rem; text-align: right;">0.255</td>
-                <td style="padding: 0.3rem; text-align: right;">0.340</td>
-                <td style="padding: 0.3rem; text-align: right;">0.255</td>
-                <td style="padding: 0.3rem; text-align: right;">0.150</td>
-                <td style="padding: 0.3rem; text-align: right; font-weight: bold;">1.000</td>
-              </tr>
-              <tr style="border-bottom: 1px solid #eee;">
-                <td style="padding: 0.3rem;">Growth (growth)</td>
-                <td style="padding: 0.3rem; text-align: right;">0.468</td>
-                <td style="padding: 0.3rem; text-align: right;">0.298</td>
-                <td style="padding: 0.3rem; text-align: right;">0.085</td>
-                <td style="padding: 0.3rem; text-align: right;">0.150</td>
-                <td style="padding: 0.3rem; text-align: right; font-weight: bold;">1.001</td>
-              </tr>
-              <tr style="border-bottom: 1px solid #eee;">
-                <td style="padding: 0.3rem;">Energy, Materials & Financials (cyclical)</td>
-                <td style="padding: 0.3rem; text-align: right;">0.298</td>
-                <td style="padding: 0.3rem; text-align: right;">0.255</td>
-                <td style="padding: 0.3rem; text-align: right;">0.298</td>
-                <td style="padding: 0.3rem; text-align: right;">0.150</td>
-                <td style="padding: 0.3rem; text-align: right; font-weight: bold;">1.001</td>
-              </tr>
-              <tr style="border-bottom: 1px solid #eee;">
-                <td style="padding: 0.3rem;">Staples, Healthcare & Utilities (defensive)</td>
-                <td style="padding: 0.3rem; text-align: right;">0.128</td>
-                <td style="padding: 0.3rem; text-align: right;">0.340</td>
-                <td style="padding: 0.3rem; text-align: right;">0.383</td>
-                <td style="padding: 0.3rem; text-align: right;">0.150</td>
-                <td style="padding: 0.3rem; text-align: right; font-weight: bold;">1.001</td>
-              </tr>
+              ${[
+                { id: 'steady', label: 'Quality Large-Cap (steady)' },
+                { id: 'growth', label: 'Growth (growth)' },
+                { id: 'cyclical', label: 'Energy, Materials & Financials (cyclical)' },
+                { id: 'defensive', label: 'Staples, Healthcare & Utilities (defensive)' }
+              ].map(b => {
+                const w = getQualityWeights(b.id) || {};
+                const unroundedSum = (w.revenueGrowth || 0) + (w.roe || 0) + (w.debtEquity || 0) + (w.earnings || 0);
+                return `
+                  <tr style="border-bottom: 1px solid #eee;">
+                    <td style="padding: 0.3rem;">${b.label}</td>
+                    <td style="padding: 0.3rem; text-align: right;">${(w.revenueGrowth || 0).toFixed(3)}</td>
+                    <td style="padding: 0.3rem; text-align: right;">${(w.roe || 0).toFixed(3)}</td>
+                    <td style="padding: 0.3rem; text-align: right;">${(w.debtEquity || 0).toFixed(3)}</td>
+                    <td style="padding: 0.3rem; text-align: right;">${(w.earnings || 0).toFixed(3)}</td>
+                    <td style="padding: 0.3rem; text-align: right; font-weight: bold;">${unroundedSum.toFixed(3)}</td>
+                  </tr>
+                `;
+              }).join('')}
             </tbody>
           </table>
+          <div style="font-size: 0.75rem; color: #555; margin-bottom: 0.25rem;">
+            Displayed weights are rounded to three decimals; row sums are computed from unrounded values. Growth, cyclical and defensive weights are non-terminating at three decimals (e.g. 0.4675).
+          </div>
           <div style="font-size: 0.75rem; color: #555;">
             * <strong>Abstention Rule:</strong> Where earnings data cannot be retrieved, the earnings component abstains (does not score 0), the remaining 3 inputs are re-normalised to sum to 1.00, and Data Confidence is reduced by 10 points.
+          </div>
+        </div>
+
+        <div style="background: #fdf2f8; border: 1px solid #fbcfe8; border-radius: 6px; padding: 0.75rem; margin-bottom: 1rem; color: #831843;">
+          <h4 style="margin: 0 0 0.5rem 0; font-size: 0.95rem; color: #831843;">Quality Weight Precision Check</h4>
+          <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-bottom: 0.5rem;">
+            <thead>
+              <tr style="border-bottom: 1px solid #f9a8d4; text-align: left;">
+                <th style="padding: 0.3rem;">Bucket</th>
+                <th style="padding: 0.3rem; text-align: right;">revenueGrowth</th>
+                <th style="padding: 0.3rem; text-align: right;">roe</th>
+                <th style="padding: 0.3rem; text-align: right;">debtEquity</th>
+                <th style="padding: 0.3rem; text-align: right;">earnings</th>
+                <th style="padding: 0.3rem; text-align: right;">computed sum</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${[
+                { id: 'steady', label: 'Quality Large-Cap' },
+                { id: 'growth', label: 'Growth' },
+                { id: 'cyclical', label: 'Energy, Materials & Financials' },
+                { id: 'defensive', label: 'Staples, Healthcare & Utilities' }
+              ].map(b => {
+                const w = getQualityWeights(b.id) || {};
+                const unroundedSum = (w.revenueGrowth || 0) + (w.roe || 0) + (w.debtEquity || 0) + (w.earnings || 0);
+                return `
+                  <tr style="border-bottom: 1px solid #fce7f3;">
+                    <td style="padding: 0.3rem;">${b.label}</td>
+                    <td style="padding: 0.3rem; text-align: right;">${(w.revenueGrowth || 0).toFixed(6)}</td>
+                    <td style="padding: 0.3rem; text-align: right;">${(w.roe || 0).toFixed(6)}</td>
+                    <td style="padding: 0.3rem; text-align: right;">${(w.debtEquity || 0).toFixed(6)}</td>
+                    <td style="padding: 0.3rem; text-align: right;">${(w.earnings || 0).toFixed(6)}</td>
+                    <td style="padding: 0.3rem; text-align: right; font-weight: bold;">${unroundedSum.toFixed(6)}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+          <div style="font-size: 0.75rem; margin-top: 0.5rem;">
+            <strong>Literal Source:</strong> The 4-input weights are derived dynamically at runtime. The base 3-input weights are read from <code>CONFIG.qualityWeightsBase</code>, and then scaled by <code>1 - CONFIG.earningsWeight</code>.
           </div>
         </div>
 
@@ -6460,6 +6590,7 @@ function computeRiskScoreAndFinal(portfolioState) {
               <tr style="background: var(--surface); border-bottom: 2px solid var(--line); text-align: left;">
                 <th style="padding: 0.5rem;">Ticker</th>
                 <th style="padding: 0.5rem;">Bucket</th>
+                <th style="padding: 0.5rem; text-align: right;">Bucket Threshold</th>
                 <th style="padding: 0.5rem; text-align: right;">3-Input Score (Before)</th>
                 <th style="padding: 0.5rem; text-align: center;">Status (Before)</th>
                 <th style="padding: 0.5rem; text-align: right;">Earnings Quality (0-100)</th>
@@ -6504,12 +6635,15 @@ function computeRiskScoreAndFinal(portfolioState) {
         impactStyle = 'color: #991b1b;';
       }
 
-      const eqDisplay = eq.available && eq.score !== null ? `${eq.score} (${eq.beatCount}/${eq.totalQuarters} beats, ${eq.trend})` : 'ABSTAIN';
+      const thresholdVal = q.threshold !== undefined ? q.threshold : (CONFIG.qualityGate[s.bucket] || 50);
+      const surpFmt = eq.available && eq.avgSurprisePct !== undefined ? `${eq.avgSurprisePct >= 0 ? '+' : ''}${eq.avgSurprisePct.toFixed(1)}% avg surprise` : '';
+      const eqDisplay = eq.available && eq.score !== null ? `${eq.score} (${eq.beatCount}/${eq.totalQuarters} beats, ${surpFmt}, ${eq.trend})` : 'ABSTAIN';
 
       html += `
         <tr style="border-bottom: 1px solid #eee;">
           <td style="padding: 0.4rem; font-weight: bold;">${s.ticker}${s.isAdded ? ' <span style="font-size:0.7rem; color:#0369a1; background:#e0f2fe; padding:0.1rem 0.3rem; border-radius:3px;">added</span>' : ''}</td>
           <td style="padding: 0.4rem;">${s.bucket}</td>
+          <td style="padding: 0.4rem; text-align: right; font-weight: bold;">${thresholdVal}</td>
           <td style="padding: 0.4rem; text-align: right;">${beforeScore.toFixed(2)}</td>
           <td style="padding: 0.4rem; text-align: center; color: ${beforePass ? '#16a34a' : '#dc2626'}; font-weight: bold;">${beforePass ? 'PASS' : 'FAIL'}</td>
           <td style="padding: 0.4rem; text-align: right;">${eqDisplay}</td>
@@ -6524,6 +6658,45 @@ function computeRiskScoreAndFinal(portfolioState) {
     html += `
             </tbody>
           </table>
+        </div>
+
+        <!-- 5. Data Confidence Penalties Reconciled -->
+        <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin-top: 1rem;">
+          <h4 style="margin: 0 0 0.5rem 0; font-size: 0.95rem; color: var(--accent);">Data Confidence Penalties</h4>
+          <p style="margin: 0 0 0.75rem 0; font-size: 0.8rem; color: var(--ink);">
+            The model applies separate, independent Data Confidence penalties based on missing data tier:
+          </p>
+          <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 280px; background: #fff5f5; border: 1px solid #fed7d7; border-radius: 6px; padding: 0.75rem;">
+              <div style="font-weight: bold; color: #c53030; font-size: 0.85rem; margin-bottom: 0.3rem;">
+                1. Missing Fundamentals Penalty (-20 Points)
+              </div>
+              <div style="font-size: 0.8rem; color: #2d3748; line-height: 1.4;">
+                <strong>Trigger:</strong> Core fundamental ratios (Revenue Growth, ROE, Debt/Equity) cannot be retrieved or parsed from Finnhub.<br>
+                <strong>Effect:</strong> Reduces Data Confidence by 20 points, sets Quality Data Unavailable flag, and triggers the quality gate bypass guard.
+              </div>
+            </div>
+            <div style="flex: 1; min-width: 280px; background: #fefce8; border: 1px solid #fef08a; border-radius: 6px; padding: 0.75rem;">
+              <div style="font-weight: bold; color: #854d0e; font-size: 0.85rem; margin-bottom: 0.3rem;">
+                2. Missing Earnings History Penalty (-10 Points)
+              </div>
+              <div style="font-size: 0.8rem; color: #2d3748; line-height: 1.4;">
+                <strong>Trigger:</strong> Finnhub quarterly earnings surprise records are unavailable.<br>
+                <strong>Effect:</strong> Reduces Data Confidence by 10 points (Prompt 18 Abstention Rule), abstains from scoring earnings quality, and re-normalizes the remaining 3 quality component weights to sum to 1.00.
+              </div>
+            </div>
+            <div style="flex: 1; min-width: 280px; background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.75rem;">
+              <div style="font-weight: bold; color: #4b5563; font-size: 0.85rem; margin-bottom: 0.3rem;">
+                3. Sentiment AI Abstention Penalty (-15 Points)
+              </div>
+              <div style="font-size: 0.8rem; color: #4b5563; line-height: 1.4;">
+                <strong>Trigger:</strong> AI confidence is &lt;20% or the rationale string is empty.<br>
+                <strong>Effect:</strong> Defaults sentiment to 50.0 (neutral), and reduces Data Confidence by 15 points.<br>
+                <strong>Triggered by (${(portfolioState.stocks.filter(s => s.sentimentData?.abstained) || []).length}):</strong> 
+                ${(portfolioState.stocks.filter(s => s.sentimentData?.abstained) || []).map(s => s.ticker).join(', ') || 'None'}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     `;
