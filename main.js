@@ -5,13 +5,13 @@ const CONFIG = {
   benchmark: "SPY",              // fetched once, shared: relative strength + regime overlay
 
   universe: {
-    steady:    { label: "Steady Compounders", tickers: ["MSFT","AAPL","V","JPM","BRK.B"],
+    steady:    { label: "Quality Large-Cap", tickers: ["MSFT","AAPL","V","JPM","BRK.B"],
                  purpose: "Durable businesses with persistent trends and controlled risk." },
-    growth:    { label: "High Growth",        tickers: ["NVDA","AMD","AMZN","GOOGL","PLTR"],
+    growth:    { label: "Growth",        tickers: ["NVDA","AMD","AMZN","GOOGL","PLTR"],
                  purpose: "Higher growth and stronger momentum while controlling volatility." },
-    cyclical:  { label: "Cyclical",           tickers: ["CAT","XOM","CVX","FCX","BAC"],
+    cyclical:  { label: "Energy, Materials & Financials",           tickers: ["CAT","XOM","CVX","FCX","BAC"],
                  purpose: "Industrial, commodity, rate and economic-cycle movements." },
-    defensive: { label: "Defensive / Income", tickers: ["KO","WMT","JNJ","ABBV","NEE"],
+    defensive: { label: "Staples, Healthcare & Utilities", tickers: ["KO","WMT","JNJ","ABBV","NEE"],
                  purpose: "Relative stability within an all-equity portfolio." }
   },
 
@@ -385,10 +385,10 @@ function generateRegimeRationale(alloc) {
 
   let changes = [];
   const bucketLabels = {
-    steady: 'Steady Compounders',
-    growth: 'High Growth',
-    cyclical: 'Cyclical',
-    defensive: 'Defensive / Income'
+    steady: CONFIG.universe.steady.label,
+    growth: CONFIG.universe.growth.label,
+    cyclical: CONFIG.universe.cyclical.label,
+    defensive: CONFIG.universe.defensive.label
   };
 
   ['steady', 'growth', 'cyclical', 'defensive'].forEach(k => {
@@ -1208,10 +1208,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const bucketLabels = {
-      steady: "Steady",
-      growth: "Growth",
-      cyclical: "Cyclical",
-      defensive: "Defensive"
+      steady: CONFIG.universe.steady.label,
+      growth: CONFIG.universe.growth.label,
+      cyclical: CONFIG.universe.cyclical.label,
+      defensive: CONFIG.universe.defensive.label
     };
 
     let html = '<ul style="list-style: none; padding: 0; margin: 0.5rem 0 0; display: flex; flex-wrap: wrap; gap: 0.5rem;">';
