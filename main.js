@@ -3083,7 +3083,7 @@ function computeVolumeScore(stock) {
   const ratioScore = Math.max(0, Math.min(100, 50 + (ratio - 1) * 100));
 
   // OBV trend
-  const obvScore = Math.max(0, Math.min(100, 50 + (ind.obvChange20 / (ind.medianDailyVolume * 20 || 1)) * 250));
+  const obvScore = Math.max(0, Math.min(100, 50 + (ind.obvChange20 / (ind.medianDailyVolume * 20 || 1)) * 125));
 
   return (0.50 * ratioScore) + (0.50 * obvScore);
 }
@@ -3118,6 +3118,12 @@ function computeRiskScoreAndFinal(portfolioState) {
 
       stock.components = stock.components || {};
       stock.components.risk = Math.max(0, Math.min(100, riskScore));
+    });
+
+    // Rank by Volume (highest raw score = best percentile)
+    const sortedByVolume = [...peers].sort((a, b) => (a.components.volume || 0) - (b.components.volume || 0));
+    sortedByVolume.forEach((stock, index) => {
+      stock.components.volume = peers.length > 1 ? (index) / (peers.length - 1) * 100 : 50;
     });
   });
 
@@ -6351,6 +6357,98 @@ function computeRiskScoreAndFinal(portfolioState) {
     container.textContent = lines.join('\\n');
   }
 
+  // --- VOLUME RECALIBRATION DIAGNOSTIC ---
+  function renderVolumeRecalibrationDiagnostic() {
+    const container = document.getElementById('volume-recalibration-content');
+    if (!container) return;
+    
+    if (!portfolioState.stocks || portfolioState.stocks.length === 0) {
+      container.textContent = 'Run analysis to see Volume Recalibration.';
+      return;
+    }
+
+    const lines = [];
+    let qualBefore = 0;
+    let qualAfter = 0;
+    const gained = [];
+    const lost = [];
+    const newVolScores = [];
+    
+    // I am recomputing the 'Before' values dynamically because the unranked raw scores
+    // are overwritten during the ranking pass, and the old multiplier is no longer present.
+    portfolioState.stocks.forEach(stock => {
+      const ind = stock.indicators || {};
+      const medianVol = ind.medianDailyVolume !== undefined ? ind.medianDailyVolume : 0;
+      const medianVol60 = ind.medianDailyVolume60 !== undefined ? ind.medianDailyVolume60 : 1;
+      const obvChange20 = ind.obvChange20 !== undefined ? ind.obvChange20 : 0;
+      const ratio = medianVol / (medianVol60 || 1);
+      const ratioScore = Math.max(0, Math.min(100, 50 + (ratio - 1) * 100));
+
+      const obvScoreBefore = Math.max(0, Math.min(100, 50 + (obvChange20 / (medianVol * 20 || 1)) * 250));
+      const rawVolBefore = (0.50 * ratioScore) + (0.50 * obvScoreBefore);
+      
+      const obvScoreAfter = Math.max(0, Math.min(100, 50 + (obvChange20 / (medianVol * 20 || 1)) * 125));
+      const rawVolAfter = (0.50 * ratioScore) + (0.50 * obvScoreAfter);
+      
+      const rankedVol = stock.components?.volume !== undefined ? stock.components.volume : 0;
+      newVolScores.push(rankedVol);
+
+      const weights = CONFIG.scoreWeights[stock.bucket];
+      const finalScoreAfter = stock.finalScore || 0;
+      
+      const baseScore = ((stock.components?.trend || 0) * weights.trend) + 
+                        ((stock.components?.momentum || 0) * weights.momentum) + 
+                        ((stock.components?.risk || 0) * weights.risk) + 
+                        ((stock.components?.sentiment || 50) * weights.sentiment);
+      
+      const unconstrainedFinalBefore = baseScore + (rawVolBefore * weights.volume);
+      const finalScoreBefore = Math.max(0, Math.min(100, unconstrainedFinalBefore));
+      
+      const delta = finalScoreAfter - finalScoreBefore;
+
+      let statusBefore = stock.status;
+      if (stock.status === 'qualified' && finalScoreBefore < CONFIG.qualificationThreshold) {
+          statusBefore = 'excluded-score';
+      } else if (stock.status === 'excluded-score' && finalScoreBefore >= CONFIG.qualificationThreshold) {
+          statusBefore = 'qualified';
+      }
+
+      if (statusBefore === 'qualified') qualBefore++;
+      if (stock.status === 'qualified') qualAfter++;
+      
+      if (statusBefore !== 'qualified' && stock.status === 'qualified') gained.push(stock.ticker);
+      if (statusBefore === 'qualified' && stock.status !== 'qualified') lost.push(stock.ticker);
+
+      const tStr = stock.ticker.padEnd(6, ' ');
+      const buckStr = stock.bucket.padEnd(10, ' ');
+      lines.push(`${tStr}  ${buckStr}  rawVolBefore=${rawVolBefore.toFixed(1)}  rawVolAfter=${rawVolAfter.toFixed(1)}  rankedVol=${rankedVol.toFixed(1)}`);
+      lines.push(`        finalScoreBefore=${finalScoreBefore.toFixed(1)}  finalScoreAfter=${finalScoreAfter.toFixed(1)}  delta=${delta > 0 ? '+' : ''}${delta.toFixed(1)}`);
+      lines.push(`        statusBefore=${statusBefore}  statusAfter=${stock.status}`);
+    });
+    
+    const sum = newVolScores.reduce((a,b)=>a+b, 0);
+    const mean = newVolScores.length > 0 ? sum / newVolScores.length : 0;
+    let median = 0;
+    if (newVolScores.length > 0) {
+       const sorted = newVolScores.slice().sort((a,b)=>a-b);
+       const mid = Math.floor(sorted.length / 2);
+       if (sorted.length % 2 === 0) {
+           median = (sorted[mid-1] + sorted[mid]) / 2;
+       } else {
+           median = sorted[mid];
+       }
+    }
+
+    lines.push("");
+    lines.push(`count qualified before = ${qualBefore}`);
+    lines.push(`count qualified after  = ${qualAfter}`);
+    lines.push(`names that gained qualification: ${gained.length > 0 ? gained.join(', ') : 'none'}`);
+    lines.push(`names that lost qualification:  ${lost.length > 0 ? lost.join(', ') : 'none'}`);
+    lines.push(`new volume component mean = ${mean.toFixed(1)}   median = ${median.toFixed(1)}`);
+
+    container.textContent = lines.join('\\n');
+  }
+
   // --- QUALIFICATION SUMMARY (DIAGNOSTICS) ---
   function renderQualificationSummary() {
     const summaryContainer = document.getElementById('qualification-summary-content');
@@ -7166,6 +7264,7 @@ function computeRiskScoreAndFinal(portfolioState) {
 
   function renderDiagnosticsTable() {
     renderVolumeDiagnostic();
+    renderVolumeRecalibrationDiagnostic();
     renderQualificationSummary();
     renderQualitySummary();
     renderVolatilityIntegrityDiagnostic();

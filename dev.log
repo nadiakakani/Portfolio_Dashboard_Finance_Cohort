@@ -1,0 +1,13 @@
+
+> genai-finance-dashboard@0.1.0 dev
+> vite --host 0.0.0.0 --port 3000
+
+Port 3000 is in use, trying another one...
+
+  VITE v5.4.21  ready in 302 ms
+
+  ➜  Local:   http://localhost:3001/
+  ➜  Network: http://169.254.8.1:3001/
+  ➜  Network: http://169.254.9.1:3001/
+  ➜  Network: http://169.254.169.1:3001/
+Terminated
