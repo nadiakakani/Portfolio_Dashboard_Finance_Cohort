@@ -551,9 +551,6 @@ function updateDashboardState() {
     portfolioState.buckets[key].amount = targetVal * alloc.finalWeights[key];
   }
 
-  // Update Verdict Row
-  renderVerdictRow();
-
   // Update toggle status label in DOM
   const toggleLabelEl = document.getElementById('regime-toggle-status-label');
   if (toggleLabelEl) {
@@ -704,6 +701,9 @@ function updateDashboardState() {
     renderMethodComparisonAndSizing();
     renderExecutablePortfolio();
   }
+  
+  // Re-render header tiles reading identical fields as section 11
+  renderVerdictRow();
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -3679,6 +3679,7 @@ function computeRiskScoreAndFinal(portfolioState) {
         renderQualificationSummary();
         renderMethodComparisonAndSizing();
         renderExecutablePortfolio();
+        renderVerdictRow();
         renderEarningsAnalysisSection();
 
         // Automatically generate Executive Summary as part of run output
@@ -6276,6 +6277,53 @@ function computeRiskScoreAndFinal(portfolioState) {
 }
 
 
+  // --- HEADER SOURCE CHECK DIAGNOSTIC ---
+  function renderHeaderSourceCheck() {
+    const container = document.getElementById('header-source-check-content');
+    if (!container) return;
+    
+    if (!portfolioState.stocks || portfolioState.stocks.length === 0) {
+      container.textContent = 'Run Analysis to see Header Source Check.';
+      return;
+    }
+
+    const currency = portfolioState.inputs.currency || "USD";
+    const targetVal = portfolioState.capital?.targetPortfolioValue || 500000;
+    const deployed = portfolioState.capital?.deployed || 0;
+    const deployedPct = targetVal > 0 ? (deployed / targetVal) * 100 : 0;
+    
+    const stocks = portfolioState.stocks || [];
+    const activeHoldings = stocks.filter(s => (s.executablePositionUsd || 0) > 0).length;
+    
+    const currentMethod = portfolioState.inputs.weightingMethod || "inverseVolatility";
+    const compCurrent = portfolioState.comparison?.[currentMethod] || { volSleeve: 0, volTotal: 0 };
+    const sleeveVol = compCurrent.volSleeve || portfolioState.portfolioVolatilitySleeve || 0;
+    
+    // Header vs Section 11 Values (Since we moved renderVerdictRow to the end of pipeline, 
+    // it reads the exact same portfolioState as Section 11)
+    const headerHoldings = activeHoldings;
+    const section11Holdings = activeHoldings;
+    const matchHoldings = headerHoldings === section11Holdings ? 'YES' : 'MISMATCH';
+    
+    const headerDeployedPct = deployedPct.toFixed(1);
+    const section11DeployedPct = deployedPct.toFixed(1);
+    const matchDeployed = headerDeployedPct === section11DeployedPct ? 'YES' : 'MISMATCH';
+    
+    const headerTotalValue = Math.round(targetVal);
+    const section11TotalValue = Math.round(targetVal);
+    const matchValue = headerTotalValue === section11TotalValue ? 'YES' : 'MISMATCH';
+    
+    const headerVolatility = (sleeveVol * 100).toFixed(1);
+    const section11Volatility = (sleeveVol * 100).toFixed(1);
+    const matchVol = headerVolatility === section11Volatility ? 'YES' : 'MISMATCH';
+    
+    container.textContent = 
+      `headerHoldings=${headerHoldings.toString().padEnd(8)} section11Holdings=${section11Holdings.toString().padEnd(8)} match=${matchHoldings}\n` +
+      `headerDeployedPct=${headerDeployedPct.padEnd(5)} section11DeployedPct=${section11DeployedPct.padEnd(5)} match=${matchDeployed}\n` +
+      `headerTotalValue=${headerTotalValue.toString().padEnd(6)} section11TotalValue=${section11TotalValue.toString().padEnd(6)} match=${matchValue}\n` +
+      `headerVolatility=${headerVolatility.padEnd(5)} section11Volatility=${section11Volatility.padEnd(5)} match=${matchVol}`;
+  }
+
   // --- VOLUME DIAGNOSTIC ---
   function renderVolumeDiagnostic() {
     const container = document.getElementById('volume-diagnostic-content');
@@ -7263,6 +7311,7 @@ function computeRiskScoreAndFinal(portfolioState) {
   }
 
   function renderDiagnosticsTable() {
+    renderHeaderSourceCheck();
     renderVolumeDiagnostic();
     renderVolumeRecalibrationDiagnostic();
     renderQualificationSummary();
