@@ -8,6 +8,11 @@
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
+  <div class="print-header" id="print-header">
+    <div style="font-weight: bold; margin-bottom: 4px;">Nadia Finance Dashboard &mdash; Portfolio Construction</div>
+    <div id="print-header-content"></div>
+  </div>
+
   <header class="app-header">
     <h1>Nadia Finance Dashboard</h1>
   </header>
@@ -19,9 +24,13 @@
     </div>
 
     <!-- TABS NAVIGATION -->
-    <nav class="tabs" style="display: flex; gap: 1rem; border-bottom: 2px solid var(--line); margin-bottom: 1.5rem; padding-bottom: 0;">
+    <nav class="tabs" style="display: flex; gap: 1rem; border-bottom: 2px solid var(--line); margin-bottom: 1.5rem; padding-bottom: 0; align-items: center;">
       <button id="btn-tab-dashboard" class="tab-btn active">Dashboard</button>
       <button id="btn-tab-diagnostics" class="tab-btn">Diagnostics</button>
+      <div style="margin-left: auto; display: flex; gap: 0.5rem;" class="print-controls">
+        <button id="btn-print-dashboard" style="background: transparent; border: 1px solid var(--ink); color: var(--ink); padding: 0.4rem 0.8rem; font-size: 0.8rem;">Print dashboard</button>
+        <button id="btn-print-diagnostics" style="background: transparent; border: 1px solid var(--ink); color: var(--ink); padding: 0.4rem 0.8rem; font-size: 0.8rem;">Print diagnostics</button>
+      </div>
     </nav>
 
     <!-- TAB CONTENT: DASHBOARD -->
@@ -31,7 +40,8 @@
       <h2>1. Investment Mandate & Parameters</h2>
       <form id="mandate-form">
         <div class="field-group">
-          <label for="total-investment">Total Investment Amount</label>
+          <label for="total-investment">NEW CAPITAL TO DEPLOY (USD)</label>
+          <p class="field-hint">Cash available to invest. Any existing holdings entered below are additional to this amount.</p>
           <input id="total-investment" name="totalInvestment" type="number" value="500000" min="1000" step="1000" required />
         </div>
 
@@ -153,13 +163,14 @@
       <div id="weight-error-banner" style="display: none; background: #ffebee; color: var(--error); padding: 0.5rem; border-radius: 3px; margin-bottom: 0.75rem; font-weight: bold; font-size: 0.85rem;"></div>
       
       <div class="capital-waterfall" style="font-size: 0.9rem; display: grid; gap: 0.35rem; margin-bottom: 1rem; border-bottom: 1px solid var(--line); padding-bottom: 1rem;">
-        <div style="display: flex; justify-content: space-between;"><span>Total Gross Investment:</span> <strong id="wf-gross">$500,000.00</strong></div>
-        <div style="display: flex; justify-content: space-between; color: #555;"><span>(-) Existing Holdings Market Value:</span> <span id="wf-existing">$0.00</span></div>
-        <div style="display: flex; justify-content: space-between; color: #555;"><span>(-) Minimum Cash Reserve:</span> <span id="wf-reserve">$25,000.00</span></div>
-        <div style="display: flex; justify-content: space-between; color: #555;"><span>(-) Provisional Fee Reserve (Commission + Tax):</span> <span id="wf-fees">$3,000.00</span></div>
-        <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 1px dashed var(--line); padding-top: 0.25rem;"><span>(=) Investable Capital:</span> <span id="wf-investable">$472,000.00</span></div>
-        <div style="display: flex; justify-content: space-between; color: #555;"><span>(+) Existing Holdings Market Value:</span> <span id="wf-existing-add">$0.00</span></div>
-        <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 1px solid var(--ink); padding-top: 0.25rem; font-size: 1rem;"><span>(=) Total Portfolio Value (capital + holdings):</span> <strong id="wf-target">$472,000.00</strong></div>
+        <div style="display: flex; justify-content: space-between;"><span>Total Gross Investment (new cash):</span> <strong id="wf-gross">$500,000.00</strong></div>
+        <div style="display: flex; justify-content: space-between; color: #555;"><span>(+) Existing Holdings Market Value:</span> <span id="wf-existing">$0.00</span></div>
+        <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 1px solid var(--ink); padding-top: 0.25rem; font-size: 1rem;"><span>(=) Total Portfolio Value:</span> <strong id="wf-target">$500,000.00</strong></div>
+        <div style="display: flex; justify-content: space-between; color: #555; margin-top: 0.5rem;"><span>(&minus;) Minimum Cash Reserve (<span id="wf-reserve-label">5.0% of TPV</span>):</span> <span id="wf-reserve">$25,000.00</span></div>
+        <div style="display: flex; justify-content: space-between; color: #555;"><span>(&minus;) Provisional Fee Reserve:</span> <span id="wf-fees">$500.00</span></div>
+        <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 1px dashed var(--line); padding-top: 0.25rem;"><span>(=) Maximum Equity Exposure:</span> <strong id="wf-max-equity">$474,500.00</strong></div>
+        <div style="display: flex; justify-content: space-between; color: #555; padding-left: 1.5rem;"><span>of which already held:</span> <span id="wf-already-held">$0.00</span></div>
+        <div style="display: flex; justify-content: space-between; color: #555; padding-left: 1.5rem;"><span>remaining to deploy:</span> <span id="wf-remaining-deploy">$474,500.00</span></div>
       </div>
 
       <!-- TACTICAL REGIME OVERLAY SUB-PANEL -->
@@ -390,6 +401,11 @@
       <section class="panel">
         <h2>HEADER SOURCE CHECK</h2>
         <pre id="header-source-check-content" style="font-family: monospace; font-size: 0.85rem; padding: 1rem; background: var(--surface); border-radius: 4px; margin-top: 1rem; overflow-x: auto; white-space: pre;">Run Analysis to see Header Source Check.</pre>
+      </section>
+
+      <section class="panel" style="margin-top: 1.5rem;">
+        <h2>EXISTING HOLDINGS SOURCE CHECK</h2>
+        <pre id="existing-holdings-source-check-content" style="font-family: monospace; font-size: 0.85rem; padding: 1rem; background: var(--surface); border-radius: 4px; margin-top: 1rem; overflow-x: auto; white-space: pre;">Run Analysis to see Existing Holdings Source Check.</pre>
       </section>
       
       <section class="panel" style="margin-top: 1.5rem;">

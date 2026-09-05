@@ -313,3 +313,93 @@ table {
     display: none !important;
   }
 }
+
+/* Print Header - Hidden on screen */
+.print-header {
+  display: none;
+}
+
+@media print {
+  @page { size: A4 landscape; margin: 12mm; }
+
+  /* CRITICAL — unwind the scroll containers */
+  div[style*="overflow-x"], .table-scroll-container, .table-scroll {
+    overflow: visible !important;
+    max-width: none !important;
+    width: auto !important;
+  }
+  table { 
+    width: 100% !important; 
+    min-width: 0 !important;
+    table-layout: auto; 
+    font-size: 8pt; 
+  }
+  th, td { padding: 3px 5px !important; }
+
+  /* Hide when printing */
+  .print-controls,
+  .tabs,
+  .app-header,
+  #run-controls-panel,
+  #api-keys-panel,
+  #holdings-panel,
+  #diagnostics-dropdown,
+  button,
+  input[type="number"],
+  .holding-input-row,
+  .field-hint,
+  .reset-controls,
+  #clear-inputs-btn,
+  #reset-results-btn,
+  #add-holding-btn,
+  #clear-holdings-btn,
+  #add-universe-ticker-btn,
+  #clear-universe-tickers-btn {
+    display: none !important;
+  }
+
+  /* Show when printing logic */
+  body.printing-dashboard #tab-dashboard { display: block !important; }
+  body.printing-dashboard #tab-diagnostics { display: none !important; }
+  
+  body.printing-diagnostics #tab-dashboard { display: none !important; }
+  body.printing-diagnostics #tab-diagnostics { display: block !important; }
+
+  /* Preserve color */
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  /* Page breaks */
+  .panel, section.panel { 
+    page-break-before: always; 
+  }
+  body.printing-dashboard #tab-dashboard .panel:first-of-type,
+  body.printing-diagnostics #tab-diagnostics .panel:first-of-type {
+    page-break-before: auto !important;
+  }
+  .diag-table tr, .verdict-row, canvas, .verdict-item {
+    page-break-inside: avoid;
+  }
+  canvas {
+    max-width: 100%;
+    height: auto;
+  }
+  
+  /* Print header */
+  .print-header {
+    display: block !important;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    background: white;
+    padding-bottom: 5px;
+    border-bottom: 1px solid var(--line);
+    z-index: 1000;
+    font-family: 'Menlo', 'Courier New', monospace;
+    font-size: 9pt;
+  }
+  
+  body {
+    padding-top: 15mm;
+  }
+}

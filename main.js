@@ -215,7 +215,7 @@ function formatCurrency(amount, currency = "USD") {
   return sym + Number(amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-// Calculate capital per A6.1
+// Calculate capital per A6.1, unified TPV formula, and Section 2 ladder
 function calculateCapital() {
   const totalInvestment = Number(document.getElementById('total-investment')?.value || 500000);
   const baseCurrency = document.getElementById('base-currency')?.value || "USD";
@@ -223,14 +223,42 @@ function calculateCapital() {
   const commissionPct = Number(document.getElementById('commission-pct')?.value ?? 0.1) / 100;
   const taxPct = Number(document.getElementById('tax-pct')?.value ?? 0) / 100;
 
+  // Existing holdings market value
+  let existingHoldingsValue = 0;
+  if (portfolioState.stocks && portfolioState.stocks.length > 0) {
+    (portfolioState.inputs.existingHoldings || []).forEach(h => {
+      const s = portfolioState.stocks.find(st => st.ticker.toUpperCase() === h.ticker.toUpperCase());
+      if (s && s.price) {
+        existingHoldingsValue += Number(h.shares || 0) * s.price;
+      }
+    });
+  } else if (portfolioState.capital?.existingValue) {
+    existingHoldingsValue = portfolioState.capital.existingValue;
+  }
+
+  // CHANGE 2: One formula, used in all three places
+  // totalPortfolioValue = newCapital + existingHoldingsMarketValue
+  // No reserve, fee or cost is subtracted from it, anywhere.
+  const targetPortfolioValue = totalInvestment + existingHoldingsValue;
+
+  // CHANGE 3: The cash reserve percentage applies to Total Portfolio Value
+  const cashReserve = cashReservePct * targetPortfolioValue;
+
+  // Provisional fee reserve applies to new cash (commission + tax)
   const feesPct = commissionPct + taxPct;
   const provisionalReserve = feesPct * totalInvestment;
-  const cashReserve = cashReservePct * totalInvestment;
-  const investableCapital = totalInvestment - cashReserve - provisionalReserve;
 
-  // Existing holdings market value (0 until prices fetched in later prompts)
-  const existingHoldingsValue = 0; 
-  const targetPortfolioValue = existingHoldingsValue + Math.max(0, investableCapital);
+  // Maximum equity exposure = TPV - cashReserve - provisionalReserve
+  const maxEquityExposure = Math.max(0, targetPortfolioValue - cashReserve - provisionalReserve);
+
+  // Already held = existingHoldingsValue
+  const alreadyHeld = existingHoldingsValue;
+
+  // Remaining to deploy = maxEquityExposure - alreadyHeld
+  const remainingToDeploy = Math.max(0, maxEquityExposure - alreadyHeld);
+
+  // Investable capital (cash available to deploy into new purchases)
+  const investableCapital = remainingToDeploy;
 
   portfolioState.inputs.totalInvestment = totalInvestment;
   portfolioState.inputs.currency = baseCurrency;
@@ -240,10 +268,13 @@ function calculateCapital() {
 
   portfolioState.capital.gross = totalInvestment;
   portfolioState.capital.existingValue = existingHoldingsValue;
+  portfolioState.capital.targetPortfolioValue = targetPortfolioValue;
   portfolioState.capital.cashReserve = cashReserve;
   portfolioState.capital.provisionalFeeReserve = provisionalReserve;
-  portfolioState.capital.investable = Math.max(0, investableCapital);
-  portfolioState.capital.targetPortfolioValue = targetPortfolioValue;
+  portfolioState.capital.maxEquityExposure = maxEquityExposure;
+  portfolioState.capital.alreadyHeld = alreadyHeld;
+  portfolioState.capital.remainingToDeploy = remainingToDeploy;
+  portfolioState.capital.investable = investableCapital;
 
   return portfolioState.capital;
 }
@@ -483,7 +514,7 @@ function renderVerdictRow() {
   container.innerHTML = `
     <div class="verdict-item">
       <div class="verdict-label">Total Portfolio Value</div>
-      <div class="verdict-value">${formatCurrency(targetVal, currency)}</div>
+      <div class="verdict-value" id="header-tpv-value">${formatCurrency(targetVal, currency)}</div>
       <div class="verdict-caption">Total Target Value</div>
     </div>
 
@@ -519,12 +550,13 @@ function renderVerdictRow() {
   `;
 }
 
-// Update and render dashboard state for Section 2
-function updateDashboardState() {
-  const capData = calculateCapital();
-  const riskSlider = document.getElementById('risk-factor');
-  const R = riskSlider ? Number(riskSlider.value) : 0.5;
-  portfolioState.inputs.riskFactor = R;
+document.addEventListener('DOMContentLoaded', () => {
+  // Update and render dashboard state for Section 2
+  function updateDashboardState() {
+    const capData = calculateCapital();
+    const riskSlider = document.getElementById('risk-factor');
+    const R = riskSlider ? Number(riskSlider.value) : 0.5;
+    portfolioState.inputs.riskFactor = R;
 
   // Read toggle and cap from DOM
   const toggleEl = document.getElementById('regime-overlay-toggle');
@@ -558,13 +590,34 @@ function updateDashboardState() {
   }
 
   // Render Waterfall
-  document.getElementById('wf-gross').textContent = formatCurrency(capData.gross, currency);
-  document.getElementById('wf-existing').textContent = formatCurrency(capData.existingValue, currency);
-  document.getElementById('wf-reserve').textContent = formatCurrency(capData.cashReserve, currency);
-  document.getElementById('wf-fees').textContent = formatCurrency(capData.provisionalFeeReserve, currency);
-  document.getElementById('wf-investable').textContent = formatCurrency(capData.investable, currency);
-  document.getElementById('wf-existing-add').textContent = formatCurrency(capData.existingValue, currency);
-  document.getElementById('wf-target').textContent = formatCurrency(targetVal, currency);
+  const reservePctDisplay = (portfolioState.inputs.cashReservePct || 5).toFixed(1);
+  const reserveLabelEl = document.getElementById('wf-reserve-label');
+  if (reserveLabelEl) {
+    reserveLabelEl.textContent = `${reservePctDisplay}% of TPV`;
+  }
+  const grossEl = document.getElementById('wf-gross');
+  if (grossEl) grossEl.textContent = formatCurrency(capData.gross, currency);
+  
+  const existingEl = document.getElementById('wf-existing');
+  if (existingEl) existingEl.textContent = formatCurrency(capData.existingValue, currency);
+  
+  const targetEl = document.getElementById('wf-target');
+  if (targetEl) targetEl.textContent = formatCurrency(targetVal, currency);
+  
+  const reserveEl = document.getElementById('wf-reserve');
+  if (reserveEl) reserveEl.textContent = formatCurrency(capData.cashReserve, currency);
+  
+  const feesEl = document.getElementById('wf-fees');
+  if (feesEl) feesEl.textContent = formatCurrency(capData.provisionalFeeReserve, currency);
+  
+  const maxEquityEl = document.getElementById('wf-max-equity');
+  if (maxEquityEl) maxEquityEl.textContent = formatCurrency(capData.maxEquityExposure, currency);
+  
+  const alreadyHeldEl = document.getElementById('wf-already-held');
+  if (alreadyHeldEl) alreadyHeldEl.textContent = formatCurrency(capData.alreadyHeld, currency);
+  
+  const remainingDeployEl = document.getElementById('wf-remaining-deploy');
+  if (remainingDeployEl) remainingDeployEl.textContent = formatCurrency(capData.remainingToDeploy, currency);
 
   // Render Regime Metrics Summary Bar
   const metricsBarEl = document.getElementById('regime-metrics-bar');
@@ -706,8 +759,7 @@ function updateDashboardState() {
   renderVerdictRow();
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  // Render disclaimer
+// Render disclaimer
   const footer = document.getElementById('app-footer');
   if (footer) {
     footer.innerHTML = `<p>${CONFIG.disclaimer}</p>`;
@@ -3236,6 +3288,17 @@ function computeRiskScoreAndFinal(portfolioState) {
 
   if (runBtn) {
     runBtn.addEventListener('click', async () => {
+      // Auto-add pending holding if any
+      const pendingTicker = document.getElementById('new-holding-ticker')?.value.trim();
+      const pendingShares = Number(document.getElementById('new-holding-shares')?.value);
+      if (pendingTicker && !isNaN(pendingShares) && pendingShares > 0) {
+        portfolioState.inputs.existingHoldings.push({ ticker: pendingTicker.toUpperCase(), shares: pendingShares });
+        try { localStorage.setItem('portfolio_existing_holdings', JSON.stringify(portfolioState.inputs.existingHoldings)); } catch (e) {}
+        document.getElementById('new-holding-ticker').value = '';
+        document.getElementById('new-holding-shares').value = '';
+        // Note: renderHoldings is not accessible here, but updateDashboardState runs later anyway
+      }
+
       const twelveDataKey = document.getElementById('twelvedata-key')?.value.trim();
       if (!twelveDataKey) {
         alert('Please enter your Twelve Data API key in the API Keys Configuration section before running analysis.');
@@ -3669,6 +3732,7 @@ function computeRiskScoreAndFinal(portfolioState) {
         if (progressEl) {
           progressEl.textContent = `Analysis price fetch, position sizing, and earnings call analysis complete! (${totalTasks} / ${totalTasks})`;
         }
+        updateDashboardState();
         renderStocksStatus();
         renderExecutionFeasibility();
         renderScoreAndConstraintTable();
@@ -3678,9 +3742,10 @@ function computeRiskScoreAndFinal(portfolioState) {
         renderWarningsAndBlocks();
         renderQualificationSummary();
         renderMethodComparisonAndSizing();
-        renderExecutablePortfolio();
         renderVerdictRow();
+        renderExecutablePortfolio();
         renderEarningsAnalysisSection();
+        renderDiagnosticsTable();
 
         // Automatically generate Executive Summary as part of run output
         await generateExecutiveSummaryAuto();
@@ -4914,17 +4979,59 @@ function computeRiskScoreAndFinal(portfolioState) {
     const currency = portfolioState.inputs.currency || "USD";
     const maxExecDays = Number(portfolioState.inputs.maxExecutionDays || 5);
 
-    // 1. Capital Balance Invariant: deployed + undeployed === targetVal + fee Surplus
+    // 0. Cross-Section Total Portfolio Value Consistency (Change 5)
+    // Compare Total Portfolio Value across Header, Section 2, and Section 11
+    const capData = calculateCapital();
+
+    // Header Total Portfolio Value
+    let header_targetVal = targetVal;
+    const headerEl = document.getElementById('header-tpv-value') || document.querySelector('#verdict-row .verdict-item:first-child .verdict-value');
+    if (headerEl && headerEl.textContent) {
+      const parsed = parseFloat(headerEl.textContent.replace(/[^0-9.-]/g, ''));
+      if (!isNaN(parsed) && parsed > 0) {
+        header_targetVal = parsed;
+      }
+    }
+
+    // Section 2 Total Portfolio Value
+    let section2_targetVal = capData.targetPortfolioValue;
+    const wfTargetEl = document.getElementById('wf-target');
+    if (wfTargetEl && wfTargetEl.textContent) {
+      const parsed = parseFloat(wfTargetEl.textContent.replace(/[^0-9.-]/g, ''));
+      if (!isNaN(parsed) && parsed > 0) {
+        section2_targetVal = parsed;
+      }
+    }
+
+    // Section 11 Total Portfolio Value
+    const section11_targetVal = targetVal;
+
+    // Compare all three: if any two differ by more than $0.01, fail
+    const diff_h_s2 = Math.abs(header_targetVal - section2_targetVal);
+    const diff_s2_s11 = Math.abs(section2_targetVal - section11_targetVal);
+    const diff_h_s11 = Math.abs(header_targetVal - section11_targetVal);
+
+    if (diff_h_s2 > 0.01 || diff_s2_s11 > 0.01 || diff_h_s11 > 0.01) {
+      failures.push({
+        rule: "Cross-Section Total Portfolio Value Consistency",
+        detail: `Total Portfolio Value contradiction across sections: Header (${formatCurrency(header_targetVal, currency)}), Section 2 (${formatCurrency(section2_targetVal, currency)}), Section 11 (${formatCurrency(section11_targetVal, currency)})`
+      });
+    }
+
+    // 1. Capital Balance Invariant: deployed + undeployed === targetVal + fee Surplus - fee shortfall (if drawn from cash)
     const totalAccounted = portfolioState.capital.deployed + portfolioState.capital.undeployed;
     const feeSurplus = (portfolioState.capital.feeReserveVariance && portfolioState.capital.feeReserveVariance > 0) 
       ? portfolioState.capital.feeReserveVariance 
       : 0;
-    const expectedTotal = targetVal + feeSurplus;
+    const feeShortfallDeduction = (portfolioState.capital.feeShortfallCovered && portfolioState.capital.feeShortfall > 0)
+      ? portfolioState.capital.feeShortfall
+      : 0;
+    const expectedTotal = targetVal + feeSurplus - feeShortfallDeduction;
 
     if (Math.abs(totalAccounted - expectedTotal) > 0.05) {
       failures.push({
         rule: "Capital Conservation",
-        detail: `Deployed (${formatCurrency(portfolioState.capital.deployed, currency)}) + Undeployed (${formatCurrency(portfolioState.capital.undeployed, currency)}) = ${formatCurrency(totalAccounted, currency)}, does not equal Target Portfolio + Fee Surplus (${formatCurrency(expectedTotal, currency)})`
+        detail: `Deployed (${formatCurrency(portfolioState.capital.deployed, currency)}) + Undeployed (${formatCurrency(portfolioState.capital.undeployed, currency)}) = ${formatCurrency(totalAccounted, currency)}, does not equal Expected Total (${formatCurrency(expectedTotal, currency)})`
       });
     }
 
@@ -5012,21 +5119,17 @@ function computeRiskScoreAndFinal(portfolioState) {
 
   // --- PROMPT 11: RUN EXECUTABLE POSITION SIZING PIPELINE (A6.8 - A6.12) ---
   function runExecutablePositionSizingPipeline(portfolioState) {
-    const investableCap = portfolioState.capital.investable || 472000;
     const maxExecDays = Number(portfolioState.inputs.maxExecutionDays || 5);
     const currency = portfolioState.inputs.currency || "USD";
 
-    // 1. Existing Holdings Market Value calculation
-    let existingHoldingsVal = 0;
-    (portfolioState.inputs.existingHoldings || []).forEach(h => {
-      const s = portfolioState.stocks.find(st => st.ticker.toUpperCase() === h.ticker.toUpperCase());
-      if (s && s.price) {
-        existingHoldingsVal += Number(h.shares || 0) * s.price;
-      }
-    });
+    // 1. Existing Holdings Market Value and Unified Target Portfolio Value
+    // Read from calculateCapital output directly (Change 2)
+    const capData = calculateCapital();
+    const existingHoldingsVal = capData.existingValue;
+    const investableCap = capData.investable;
 
     portfolioState.capital.existingValue = existingHoldingsVal;
-    portfolioState.capital.targetPortfolioValue = investableCap + existingHoldingsVal;
+    portfolioState.capital.targetPortfolioValue = capData.targetPortfolioValue;
     const targetVal = portfolioState.capital.targetPortfolioValue;
 
     // Update bucket amounts in state
@@ -5287,7 +5390,27 @@ function computeRiskScoreAndFinal(portfolioState) {
     portfolioState.capital.unspentResidualCashTotal = unspentResidualCashTotal;
 
     const baseUndeployed = Math.max(0, targetVal - totalDeployed);
-    portfolioState.capital.undeployed = baseUndeployed + (feeReserveVariance > 0 ? feeReserveVariance : 0);
+    let finalUndeployed = baseUndeployed;
+    let feeShortfallCovered = false;
+    let feeShortfall = 0;
+
+    if (feeReserveVariance > 0) {
+      finalUndeployed = baseUndeployed + feeReserveVariance;
+    } else if (feeReserveVariance < 0) {
+      feeShortfall = Math.abs(feeReserveVariance);
+      if (baseUndeployed >= feeShortfall) {
+        // CHANGE 6: Draw the shortfall from undeployed cash
+        finalUndeployed = baseUndeployed - feeShortfall;
+        feeShortfallCovered = true;
+      } else {
+        finalUndeployed = 0;
+        feeShortfallCovered = false;
+      }
+    }
+
+    portfolioState.capital.undeployed = finalUndeployed;
+    portfolioState.capital.feeShortfallCovered = feeShortfallCovered;
+    portfolioState.capital.feeShortfall = feeShortfall;
 
     // Settled Cash Calculation & Verification
     const existingPortfolioVal = portfolioState.capital.existingValue || 0;
@@ -6016,6 +6139,7 @@ function computeRiskScoreAndFinal(portfolioState) {
     if (!bannerContainer || !summaryContainer || !positionsContainer) return;
 
     const currency = portfolioState.inputs.currency || "USD";
+    assertInvariantsA10(portfolioState);
     const failures = portfolioState.invariantFailures || [];
 
     // 1. Invariant Banner
@@ -6062,10 +6186,25 @@ function computeRiskScoreAndFinal(portfolioState) {
     const undeployedPct = targetVal > 0 ? (undeployed / targetVal) * 100 : 0;
 
     const isShortfall = feeVariance < 0;
-    const varianceLabel = isShortfall ? "Fee Shortfall" : "Surplus Returned";
-    const varianceColor = isShortfall ? "color: var(--error);" : "color: #2e7d32;";
-    const varianceSign = isShortfall ? "-" : "+";
-    const varianceStr = `${varianceSign}${formatCurrency(Math.abs(feeVariance), currency)}`;
+    const feeShortfallCovered = portfolioState.capital.feeShortfallCovered === true;
+
+    let varianceLabel = "Surplus Returned";
+    let varianceColor = "color: #2e7d32;";
+    let varianceSign = "+";
+    let varianceStr = `+${formatCurrency(feeVariance, currency)}`;
+
+    if (isShortfall) {
+      varianceSign = "-";
+      if (feeShortfallCovered) {
+        varianceLabel = "Topped Up From Cash";
+        varianceColor = "color: #2e7d32;";
+        varianceStr = `-${formatCurrency(Math.abs(feeVariance), currency)}`;
+      } else {
+        varianceLabel = "Fee Shortfall (Uncovered)";
+        varianceColor = "color: var(--error);";
+        varianceStr = `-${formatCurrency(Math.abs(feeVariance), currency)}`;
+      }
+    }
 
     summaryContainer.innerHTML = `
       <div style="background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 1rem; font-size: 0.9rem;">
@@ -6083,8 +6222,8 @@ function computeRiskScoreAndFinal(portfolioState) {
             <div style="color: #856404; font-size: 0.8rem;">Undeployed Cash Held</div>
             <div style="font-size: 1.1rem; font-weight: bold; font-family: monospace; color: #856404;">${formatCurrency(undeployed, currency)} (${undeployedPct.toFixed(1)}%)</div>
           </div>
-          <div style="background: ${isShortfall ? '#ffebee' : '#f4f3ef'}; padding: 0.75rem; border-radius: 4px; border: 1px solid ${isShortfall ? 'var(--error)' : 'var(--line)'};">
-            <div style="color: ${isShortfall ? 'var(--error)' : '#666'}; font-size: 0.8rem;">Fee Reserve Reconciliation</div>
+          <div style="background: ${isShortfall && !feeShortfallCovered ? '#ffebee' : '#f4f3ef'}; padding: 0.75rem; border-radius: 4px; border: 1px solid ${isShortfall && !feeShortfallCovered ? 'var(--error)' : 'var(--line)'};">
+            <div style="color: ${isShortfall && !feeShortfallCovered ? 'var(--error)' : '#666'}; font-size: 0.8rem;">Fee Reserve Reconciliation</div>
             <div style="font-size: 0.85rem; font-family: monospace; margin-top: 0.25rem;">
               Prov. Reserve: ${formatCurrency(provReserve, currency)}<br>
               Est. Cost: <strong>${formatCurrency(estimatedCost, currency)}</strong><br>
@@ -6115,11 +6254,17 @@ function computeRiskScoreAndFinal(portfolioState) {
           </div>
         </div>
 
-        ${isShortfall ? `
-          <div style="background: #ffebee; border: 1px solid var(--error); color: var(--error); padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.85rem; margin-top: 0.75rem; font-weight: bold; display: flex; align-items: center; gap: 0.5rem;">
-            <span>⚠️ FEE RESERVE SHORTFALL WARNING:</span> Estimated transaction costs (${formatCurrency(estimatedCost, currency)}) exceed provisional fee reserve (${formatCurrency(provReserve, currency)}) by ${formatCurrency(Math.abs(feeVariance), currency)}.
-          </div>
-        ` : ''}
+        ${isShortfall ? (
+          feeShortfallCovered ? `
+            <div style="background: #e8f5e9; border: 1px solid #c8e6c9; color: #2e7d32; padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.85rem; margin-top: 0.75rem; font-weight: bold; display: flex; align-items: center; gap: 0.5rem;">
+              <span>✓ Fee reserve topped up by ${formatCurrency(Math.abs(feeVariance), currency)} from undeployed cash.</span>
+            </div>
+          ` : `
+            <div style="background: #ffebee; border: 1px solid var(--error); color: var(--error); padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.85rem; margin-top: 0.75rem; font-weight: bold; display: flex; align-items: center; gap: 0.5rem;">
+              <span>⚠️ FEE RESERVE SHORTFALL WARNING:</span> Estimated transaction costs (${formatCurrency(estimatedCost, currency)}) exceed provisional fee reserve (${formatCurrency(provReserve, currency)}) by ${formatCurrency(Math.abs(feeVariance), currency)}, and undeployed cash is insufficient to cover it.
+            </div>
+          `
+        ) : ''}
       </div>
     `;
 
@@ -6322,6 +6467,61 @@ function computeRiskScoreAndFinal(portfolioState) {
       `headerDeployedPct=${headerDeployedPct.padEnd(5)} section11DeployedPct=${section11DeployedPct.padEnd(5)} match=${matchDeployed}\n` +
       `headerTotalValue=${headerTotalValue.toString().padEnd(6)} section11TotalValue=${section11TotalValue.toString().padEnd(6)} match=${matchValue}\n` +
       `headerVolatility=${headerVolatility.padEnd(5)} section11Volatility=${section11Volatility.padEnd(5)} match=${matchVol}`;
+  }
+
+  // --- EXISTING HOLDINGS SOURCE CHECK DIAGNOSTIC ---
+  function renderExistingHoldingsSourceCheck() {
+    const container = document.getElementById('existing-holdings-source-check-content');
+    if (!container) return;
+
+    if (!portfolioState.stocks || portfolioState.stocks.length === 0) {
+      container.textContent = 'Run Analysis to see Existing Holdings Source Check.';
+      return;
+    }
+
+    const capData = calculateCapital();
+    const section2_existingHoldingsValue = capData.existingValue;
+    const section11_existingHoldingsValue = portfolioState.capital?.existingValue || 0;
+    const matchHoldings = Math.abs(section2_existingHoldingsValue - section11_existingHoldingsValue) <= 0.01 ? 'YES' : 'NO';
+
+    let header_totalPortfolioValue = portfolioState.capital?.targetPortfolioValue || 0;
+    const headerEl = document.getElementById('header-tpv-value') || document.querySelector('#verdict-row .verdict-item:first-child .verdict-value');
+    if (headerEl && headerEl.textContent) {
+      const parsed = parseFloat(headerEl.textContent.replace(/[^0-9.-]/g, ''));
+      if (!isNaN(parsed) && parsed > 0) {
+        header_totalPortfolioValue = parsed;
+      }
+    }
+    const section2_totalPortfolioValue = capData.targetPortfolioValue;
+    const section11_totalPortfolioValue = portfolioState.capital?.targetPortfolioValue || 0;
+
+    const tpvMatch = (Math.abs(header_totalPortfolioValue - section2_totalPortfolioValue) <= 0.01 &&
+                      Math.abs(section2_totalPortfolioValue - section11_totalPortfolioValue) <= 0.01 &&
+                      Math.abs(header_totalPortfolioValue - section11_totalPortfolioValue) <= 0.01) ? 'YES' : 'NO';
+
+    const minCashReserve_basis = "Total Portfolio Value";
+    const minCashReserve_amount = capData.cashReserve;
+
+    let text = `section2_existingHoldingsValue  = ${section2_existingHoldingsValue}\n`;
+    text += `section11_existingHoldingsValue = ${section11_existingHoldingsValue}\n`;
+    text += `match = ${matchHoldings}\n\n`;
+
+    text += `header_totalPortfolioValue    = ${header_totalPortfolioValue}\n`;
+    text += `section2_totalPortfolioValue  = ${section2_totalPortfolioValue}\n`;
+    text += `section11_totalPortfolioValue = ${section11_totalPortfolioValue}\n`;
+    text += `match = ${tpvMatch}\n\n`;
+
+    text += `minCashReserve_basis = "${minCashReserve_basis}"\n`;
+    text += `minCashReserve_amount = ${minCashReserve_amount}\n\n`;
+
+    (portfolioState.inputs.existingHoldings || []).forEach(h => {
+      const s = (portfolioState.stocks || []).find(st => st.ticker.toUpperCase() === h.ticker.toUpperCase());
+      const price = s?.price || 0;
+      const val = price * (h.shares || 0);
+      text += `${h.ticker.toUpperCase()}  shares=${h.shares}  price=${price}  value=${val}  source=portfolioState.inputs.existingHoldings\n`;
+    });
+
+    container.textContent = text;
   }
 
   // --- VOLUME DIAGNOSTIC ---
@@ -6648,6 +6848,53 @@ function computeRiskScoreAndFinal(portfolioState) {
       renderDiagnosticsTable();
       populateDiagnosticsDropdown();
     });
+  }
+
+  // --- PRINT CONTROLS ---
+  function updatePrintHeader() {
+    const headerContent = document.getElementById('print-header-content');
+    if (!headerContent) return;
+
+    const dt = new Date().toLocaleString();
+    const inv = portfolioState.inputs.totalInvestment || 0;
+    const curr = portfolioState.inputs.currency || "USD";
+    const rVal = portfolioState.inputs.riskFactor || 0.5;
+    
+    let holdingsCount = 0;
+    if (portfolioState.stocks && portfolioState.stocks.length > 0) {
+      holdingsCount = portfolioState.stocks.filter(s => (s.executablePositionUsd || 0) > 0).length;
+    }
+
+    headerContent.innerHTML = `
+      <div style="display: flex; gap: 2rem;">
+        <span>Run: ${dt}</span>
+        <span>Capital: ${formatCurrency(inv, curr)}</span>
+        <span>Risk factor R: ${rVal.toFixed(2)}</span>
+        <span>Base currency: ${curr}</span>
+        <span>Universe: 21 companies</span>
+        <span>Holdings: ${holdingsCount}</span>
+      </div>
+    `;
+  }
+
+  const btnPrintDash = document.getElementById('btn-print-dashboard');
+  const btnPrintDiag = document.getElementById('btn-print-diagnostics');
+
+  function handlePrint(printClass) {
+    updatePrintHeader();
+    document.body.classList.add(printClass);
+    window.print();
+  }
+
+  window.addEventListener('afterprint', () => {
+    document.body.classList.remove('printing-dashboard', 'printing-diagnostics');
+  });
+
+  if (btnPrintDash) {
+    btnPrintDash.addEventListener('click', () => handlePrint('printing-dashboard'));
+  }
+  if (btnPrintDiag) {
+    btnPrintDiag.addEventListener('click', () => handlePrint('printing-diagnostics'));
   }
 
   // --- DIAGNOSTICS TAB LOGIC ---
@@ -7312,6 +7559,7 @@ function computeRiskScoreAndFinal(portfolioState) {
 
   function renderDiagnosticsTable() {
     renderHeaderSourceCheck();
+    renderExistingHoldingsSourceCheck();
     renderVolumeDiagnostic();
     renderVolumeRecalibrationDiagnostic();
     renderQualificationSummary();
